@@ -1,4 +1,4 @@
-package main
+package escheduler
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"os"
 	"path"
-	"strings"
 	"time"
 )
 
@@ -27,28 +26,13 @@ type TaskChange struct {
 type Worker interface {
 	// Start is run at the beginning of a new session, before ConsumeClaim.
 	Start(ctx context.Context) (chan TaskChange, error)
-	Stop() error
-}
-type WorkerConfig struct {
-	EtcdConfig clientv3.Config
-	RootPath   string
-	// TTL configures the session's TTL in seconds.
-	// If TTL is <= 0, the default 60 seconds TTL will be used.
-	NodeTTL int64
-}
-
-func (wc WorkerConfig) Validation() error {
-	if len(wc.RootPath) == 0 {
-		return errors.New("RootName is required")
-	}
-	return nil
+	Stop()
 }
 
 type workerInstance struct {
-	config    WorkerConfig
-	client    *clientv3.Client
-	name      string
-	closeChan chan struct{} //
+	Node
+	name   string
+	closed chan struct{} //
 
 	// path
 	workerPath     string
@@ -63,7 +47,7 @@ func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
 		err          error
 	)
 	// 创建租约
-	leaseResp, err = w.client.Lease.Grant(ctx, w.config.NodeTTL)
+	leaseResp, err = w.client.Lease.Grant(ctx, w.TTL)
 	if err != nil {
 		log.Errorf("create worker alive lease error:%s", err)
 		time.Sleep(time.Second)
@@ -90,17 +74,16 @@ func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
 func (w workerInstance) key() string {
 	return path.Join(w.workerPath, w.name)
 }
-func (w workerInstance) Stop() error {
-	//TODO implement me
-	panic("implement me")
+func (w *workerInstance) Stop() {
+	close(w.closed)
 }
-func (w workerInstance) Add(task RawData) {
+func (w *workerInstance) Add(task RawData) {
 	w.taskChan <- TaskChange{Action: 1, Task: task}
 }
-func (w workerInstance) Del(task RawData) {
+func (w *workerInstance) Del(task RawData) {
 	w.taskChan <- TaskChange{Action: 2, Task: task}
 }
-func (w workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3.LeaseKeepAliveResponse) {
+func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3.LeaseKeepAliveResponse) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	resp, err := w.client.KV.Get(ctx, w.taskPathPrefix, clientv3.WithPrefix())
@@ -109,7 +92,7 @@ func (w workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3
 		return
 	}
 	for _, kvPair := range resp.Kvs {
-		task, err := ParseTaskFromKey(string(kvPair.Key))
+		task, err := ParseTaskFromTaskKey(string(kvPair.Key))
 		if err != nil {
 			log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", kvPair.Key, err)
 			continue
@@ -132,7 +115,7 @@ func (w workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3
 				switch watchEvent.Type {
 				case mvccpb.PUT:
 					// 任务新建事件
-					task, err := ParseTaskFromKey(string(watchEvent.Kv.Key))
+					task, err := ParseTaskFromTaskKey(string(watchEvent.Kv.Key))
 					if err != nil {
 						log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", watchEvent.Kv.Key, err)
 						continue
@@ -140,7 +123,7 @@ func (w workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3
 					w.Add(task)
 				case mvccpb.DELETE:
 					// 任务新建事件
-					task, err := ParseTaskFromKey(string(watchEvent.Kv.Key))
+					task, err := ParseTaskFromTaskKey(string(watchEvent.Kv.Key))
 					if err != nil {
 						log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", watchEvent.Kv.Key, err)
 						continue
@@ -156,8 +139,8 @@ func (w workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3
 }
 
 // NewWorker create a worker
-func NewWorker(config WorkerConfig) (Worker, error) {
-	err := config.Validation()
+func NewWorker(node Node) (Worker, error) {
+	err := node.Validation()
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
 	}
@@ -169,26 +152,16 @@ func NewWorker(config WorkerConfig) (Worker, error) {
 	pid := os.Getpid()
 	name := fmt.Sprintf("%s-%d", ip, pid)
 	worker := workerInstance{
-		config:         config,
+		Node:           node,
 		name:           name,
-		closeChan:      make(chan struct{}),
-		workerPath:     path.Join("/", config.RootPath, workerFolder),
-		taskPathPrefix: path.Join(config.RootPath, taskFolder),
+		closed:         make(chan struct{}),
+		workerPath:     path.Join("/", node.RootName, workerFolder),
+		taskPathPrefix: path.Join(node.RootName, taskFolder),
 	}
 	// 建立连接
-	worker.client, err = clientv3.New(config.EtcdConfig)
+	worker.client, err = clientv3.New(node.EtcdConfig)
 	if err != nil {
 		return nil, err
 	}
 	return &worker, nil
-}
-
-// input /klinefetch/job/ip:172.19.82.35-pid:23972/{"exchange":"ftx","type":"s","asset":"1INCH","to":"USD","symbol":"1INCH/USD","db":"1","onboard_date":"0001-01-01T00:00:00Z"}
-// output ip:172.19.82.35-pid:23972.
-func ParseWorkerKey(key string) string {
-	arr := strings.SplitN(key, "/", 4)
-	if len(arr) >= 4 {
-		return arr[len(arr)-1]
-	}
-	return ""
 }

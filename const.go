@@ -1,4 +1,4 @@
-package main
+package escheduler
 
 const (
 	Todo    = "todo"
