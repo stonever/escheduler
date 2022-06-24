@@ -1,64 +1,47 @@
-package main
+package escheduler
 
 import (
 	"context"
 	"fmt"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/stonever/escheduler/log"
 	"github.com/zehuamama/balancer/balancer"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
+	"go.uber.org/zap"
 	"os"
 	"path"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 )
 
-func init() {
-	// Log as JSON instead of the default ASCII formatter.
-	log.SetFormatter(&log.JSONFormatter{})
-
-	// Output to stdout instead of the default stderr
-	// Can be any io.Writer, see below for File example
-	log.SetOutput(os.Stdout)
-}
-
-type JobConfig struct {
-	Generator func() ([]Task, error)
+type SchedulerConfig struct {
 	// Interval configures interval of schedule task.
 	// If Interval is <= 0, the default 60 seconds Interval will be used.
-	Interval time.Duration
-}
-type SchedulerConfig struct {
-	JobConfig
-	EtcdConfig clientv3.Config
-	RootName   string
-	// TTL configures the session's TTL in seconds.
-	// If TTL is <= 0, the default 60 seconds TTL will be used.
-	NodeTTL int
+	Interval          time.Duration
+	Generator         func(ctx context.Context) ([]Task, error)
+	ExpectedWorkerNum int
+	ReBalanceWait     time.Duration
 }
 
 func (sc SchedulerConfig) Validation() error {
-	if len(sc.RootName) == 0 {
-		return errors.New("RootName is required")
-	}
 	if sc.Interval == 0 {
 		return errors.New("Interval is required")
+	}
+	if sc.Generator == nil {
+		return errors.New("Generator is required")
 	}
 	return nil
 }
 
 type schedulerInstance struct {
+	Node
 	config    SchedulerConfig
-	taskGen   taskGen
-	client    *clientv3.Client
 	lease     clientv3.Lease // 用于操作租约
 	closeChan chan struct{}  //
 
-	name         string
-	distribution chan workerChange
+	name string
 
 	// balancer
 	RoundRobinBalancer balancer.Balancer
@@ -67,14 +50,20 @@ type schedulerInstance struct {
 
 	// path
 	workerPath string
+	//
+	onlineWorkerNum int
 }
 
-func (s *schedulerInstance) NotifySchedule(reason string) {
-	s.scheduleReqChan <- reason
+func (s *schedulerInstance) NotifySchedule(request string) {
+	select {
+	case s.scheduleReqChan <- request:
+	default:
+		log.Warn("scheduler is busy, ignored", zap.String("request", request))
+	}
 }
 
 // NewScheduler create a scheduler
-func NewScheduler(config SchedulerConfig, tg taskGen) (Scheduler, error) {
+func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 	err := config.Validation()
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
@@ -87,16 +76,15 @@ func NewScheduler(config SchedulerConfig, tg taskGen) (Scheduler, error) {
 	pid := os.Getpid()
 	name := fmt.Sprintf("%s-%d", ip, pid)
 	scheduler := schedulerInstance{
+		Node:            node,
 		config:          config,
 		name:            name,
-		distribution:    make(chan workerChange, 1),
-		taskGen:         tg,
 		closeChan:       make(chan struct{}),
-		workerPath:      path.Join("/", config.RootName, workerFolder),
+		workerPath:      path.Join("/", node.RootName, workerFolder),
 		scheduleReqChan: make(chan string, 0),
 	}
 	// 建立连接
-	scheduler.client, err = clientv3.New(config.EtcdConfig)
+	scheduler.client, err = clientv3.New(node.EtcdConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +116,7 @@ var ErrSchedulerClosed = errors.New("scheduler was closed")
 
 func (s *schedulerInstance) ElectionKey() string {
 	u, _ := uuid.NewUUID()
-	return path.Join("/"+s.config.RootName, electionFolder, u.String())
+	return path.Join("/"+s.RootName, electionFolder, u.String())
 }
 
 // Start The endless loop is for trying to election.
@@ -149,7 +137,7 @@ func (s *schedulerInstance) Start(ctx context.Context) error {
 		}
 		err = s.ElectOnce(ctx)
 		if err != nil {
-			log.Errorf("failed to elect once,err:%s", err)
+			log.Error("failed to elect once,err:%s", zap.Error(err))
 		}
 	}
 
@@ -165,28 +153,30 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// session的lease租约有效期设为30s，节点异常，最长等待15s，集群会产生新的leader执行调度
-	session, err = concurrency.NewSession(s.client, concurrency.WithTTL(s.config.NodeTTL))
+	session, err = concurrency.NewSession(s.client, concurrency.WithTTL(int(s.TTL)))
 	if err != nil {
-		logger.Errorf("failed to new session,err:%s", err)
+		log.Error("failed to new session,err:%s", zap.Error(err))
+
 		return err
 	}
 	defer session.Close()
 	electionKey := s.ElectionKey()
 	election := concurrency.NewElection(session, electionKey)
-	log.Infof("try to elect %s", electionKey)
+
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
 	err = election.Campaign(ctx, s.name)
 	if err != nil {
-		logger.Errorf("failed to campaign, err:%s", err)
+		log.Error("failed to campaign, err:%s", zap.Error(err))
 		return err
 	}
 	resp, err := election.Leader(ctx)
 	if err != nil {
-		logger.Errorf("failed to get leader, err:%s", err)
+		log.Error("failed to get leader, err:%s", zap.Error(err))
 		return err
 	}
 	defer election.Resign(ctx)
-	log.Infof("got leader %+v", resp)
+	log.Info("get leader, resp:%s", zap.Any("resp", resp), zap.Error(err))
+
 	go s.handleScheduleRequest(ctx)
 	go s.watch(ctx)
 	c := election.Observe(ctx)
@@ -200,7 +190,7 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 			if !ok {
 				break
 			}
-			log.Infof("watch election got response :%v %t", electionResp, ok)
+			log.Info("watch election got response :%v %t", zap.Any("resp", electionResp), zap.Any("ok", ok))
 			continue
 		}
 		if !ok {
@@ -218,8 +208,9 @@ type workerChange struct {
 	Worker string // worker name
 }
 
+// taskPath return for example: /20220624/task
 func (s *schedulerInstance) taskPath() string {
-	return path.Join("/"+s.config.RootName, taskFolder)
+	return path.Join("/"+s.RootName, taskFolder)
 }
 
 func (s *schedulerInstance) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
@@ -229,9 +220,10 @@ func (s *schedulerInstance) onlineWorkerList(ctx context.Context) (workersWithJo
 	}
 	workers := make([]string, 0, len(resp.Kvs))
 	for _, kvPair := range resp.Kvs {
-		worker, err := ParseWorkerFromKey(string(kvPair.Key))
+		worker, err := ParseWorkerFromWorkerKey(string(kvPair.Key))
 		if err != nil {
-			log.Errorf("ParseWorkerFromKey for %s error :%s", kvPair.Key, err)
+
+			log.Error("ParseWorkerFromKey for %s error :%s", zap.ByteString("key", kvPair.Key), zap.Error(err))
 			continue
 		}
 		workers = append(workers, worker)
@@ -266,9 +258,10 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.scheduleReqChan:
+			time.Sleep(s.config.ReBalanceWait)
 			err := s.doSchedule(ctx)
 			if err != nil {
-				log.Errorf("doSchedule error: %s", err)
+				log.Error("doSchedule error: %s", zap.Error(err))
 			}
 		}
 	}
@@ -276,11 +269,12 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 
 func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	// start to assign
-	taskList, err := s.taskGen(ctx)
+	taskList, err := s.config.Generator(ctx)
 	if err != nil {
-		logger.Errorf("failed to get leader, err:%s", err)
+		log.Error("failed to get leader, err:%s", zap.Error(err))
 		return err
 	}
+	log.Info("task total", zap.Int("count", len(taskList)))
 	taskMap := make(map[string]Task)
 	for _, task := range taskList {
 		taskMap[string(task.Raw)] = task
@@ -288,69 +282,46 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	// query all online worker in etcd
 	workerList, err := s.onlineWorkerList(ctx)
 	if err != nil {
-		logger.Errorf("failed to get leader, err:%s", err)
+		log.Error("failed to get leader, err:%s", zap.Error(err))
 		return err
 	}
+	log.Info("worker total ", zap.Int("count", len(workerList)), zap.Any("array", workerList))
+
 	workerMap := make(map[string]struct{})
 	for _, value := range workerList {
 		workerMap[value] = struct{}{}
 	}
-	// delete expired workers
-	workerPathResp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
-	if err != nil {
-		return err
-	}
-	for _, kvPair := range workerPathResp.Kvs {
-		// kvPair.Key形如/klinefetch/job/ip:172.19.82.35-pid:10888/{"exchange":"binance","assert":"BTC","symbol":"BTCBKRW"}
-		// path.Dir(string(kvPair.Key))取出/klinefetch/job/ip:172.19.82.35-pid:10888
-		// path.Base取路径的最后一个元素，取出ip:172.19.82.35-pid:10888
-		workerKey := ParseWorkerKey(string(kvPair.Key))
-		_, ok := workerMap[workerKey]
-		if ok {
-			continue
-		}
-		_, err := s.client.KV.Delete(ctx, string(kvPair.Key), clientv3.WithPrefix())
-		if err != nil {
-			return fmt.Errorf("failed to clear task. err:%w", err)
-		}
-		_, err = s.client.KV.Delete(ctx, s.taskPath(), clientv3.WithPrefix())
-		if err != nil {
-			return fmt.Errorf("failed to clear task. err:%w", err)
-		}
-	}
+	// delete task which is belonged to expired workers
+	//workerPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
+	//if err != nil {
+	//	return err
+	//}
+	//for _, kvPair := range workerPathResp.Kvs {
+	//	// kvPair.Key形如/klinefetch/job/ip:172.19.82.35-pid:10888/{"exchange":"binance","assert":"BTC","symbol":"BTCBKRW"}
+	//	// path.Dir(string(kvPair.Key))取出/klinefetch/job/ip:172.19.82.35-pid:10888
+	//	// path.Base取路径的最后一个元素，取出ip:172.19.82.35-pid:10888
+	//	workerKey := ParseWorkerKey(string(kvPair.Key))
+	//	_, ok := workerMap[workerKey]
+	//	if ok {
+	//		continue
+	//	}
+	//	_, err := s.client.KV.Delete(ctx, string(kvPair.Key), clientv3.WithPrefix())
+	//	if err != nil {
+	//		return fmt.Errorf("failed to clear task. err:%w", err)
+	//	}
+	//	_, err = s.client.KV.Delete(ctx, s.taskPath(), clientv3.WithPrefix())
+	//	if err != nil {
+	//		return fmt.Errorf("failed to clear task. err:%w", err)
+	//	}
+	//}
+
+	// delete task which is belonged to expired workers
 	toDeleteTaskKey := make([]string, 0)
+	toDeleteWorkerTaskKey := make(map[string]struct{}, 0)
+
 	taskPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
 	if err != nil {
 		return err
-	}
-	for _, kvPair := range taskPathResp.Kvs {
-
-		workerKey := ParseWorkerKey(string(kvPair.Key))
-		_, ok := workerMap[workerKey]
-		if !ok {
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			continue
-		}
-		_, ok = taskMap[string(kvPair.Value)]
-		if !ok {
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Value))
-		} else {
-			delete(taskMap, string(kvPair.Value))
-		}
-	}
-
-	if len(toDeleteTaskKey) > 0 {
-
-		// get incremental tasks
-		log.Infof("to delete expired task len:%d %v\n", len(toDeleteTaskKey), toDeleteTaskKey)
-		for _, prefix := range toDeleteTaskKey {
-			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
-			if err != nil {
-				log.Errorf("task belong to %s total deleted:%d", prefix, deleteResp.Deleted)
-				return fmt.Errorf("failed to clear task. err:%w", err)
-			}
-			log.Infof("task belong to %s total deleted:%d", prefix, deleteResp.Deleted)
-		}
 	}
 	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
 	if err != nil {
@@ -360,13 +331,62 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	for _, kvPair := range taskPathResp.Kvs {
+
+		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
+		_, ok := workerMap[workerKey]
+		if !ok {
+			parentPath := path.Dir(string(kvPair.Key))
+			toDeleteWorkerTaskKey[parentPath] = struct{}{}
+			continue
+		}
+		task, err := ParseTaskFromTaskKey(string(kvPair.Key))
+		if err != nil {
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			continue
+		}
+		_, ok = taskMap[string(task)]
+		if !ok {
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+		} else {
+			// this valid task is existed in valid worker,so give up being re-balance
+			delete(taskMap, string(task))
+			leastLoadBalancer.Inc(workerKey)
+		}
+	}
+	if len(toDeleteWorkerTaskKey) > 0 {
+		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)), zap.Any("expired-worker", toDeleteWorkerTaskKey))
+		for prefix := range toDeleteWorkerTaskKey {
+			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
+			if err != nil {
+				log.Error("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
+				return fmt.Errorf("failed to clear task. err:%w", err)
+			}
+		}
+	}
+	if len(toDeleteTaskKey) > 0 {
+		// get incremental tasks
+		log.Info("to delete expired task ", zap.Int("len", len(toDeleteTaskKey)), zap.Any("array", toDeleteTaskKey))
+		for _, prefix := range toDeleteTaskKey {
+			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
+			if err != nil {
+				log.Error("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
+				return fmt.Errorf("failed to clear task. err:%w", err)
+			}
+			log.Info("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
+		}
+	}
+
 	assignMap := make(map[string][]Task)
+	assignCount := 0
 	for _, value := range taskMap {
 		if len(value.Key) == 0 {
 			assignTo, err := leastLoadBalancer.Balance(string(value.Raw))
 			if err != nil {
 				return err
 			}
+			leastLoadBalancer.Inc(assignTo)
 			assignMap[assignTo] = append(assignMap[assignTo], value)
 			continue
 		}
@@ -375,7 +395,10 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 			return err
 		}
 		assignMap[assignTo] = append(assignMap[assignTo], value)
+		assignCount++
 	}
+	log.Info("task re-balance total", zap.Int("count", assignCount))
+
 	for worker, arr := range assignMap {
 		for _, value := range arr {
 			taskKey := path.Join(s.taskPath(), worker, string(value.Raw))
@@ -395,7 +418,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 	s.NotifySchedule(fmt.Sprintf("first init"))
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
-		log.Errorf("get worker job list failed. %w", err)
+		log.Error("get worker job list failed. %w", zap.Error(err))
 		s.Stop()
 	}
 	ticker := time.NewTicker(s.config.Interval)
@@ -418,7 +441,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 					s.NotifySchedule(fmt.Sprintf("delete worker:%s ", watchEvent.Kv.Key))
 					continue
 				}
-				log.Infof("ignore event:%v", watchEvent)
+
 			}
 		}
 

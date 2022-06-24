@@ -1,4 +1,4 @@
-package main
+package escheduler
 
 import (
 	log "github.com/sirupsen/logrus"
