@@ -40,9 +40,9 @@ type workerInstance struct {
 	closed chan struct{} //
 
 	// path
-	workerPath     string
-	taskChan       chan TaskChange
-	taskPathPrefix string
+	workerPath string // eg. /20220624/worker
+	taskChan   chan TaskChange
+	taskPath   string // eg. 20220624/task/192.168.193.131-101576
 }
 
 func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
@@ -65,7 +65,7 @@ func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
 
 	}
 	// 注册到etcd
-	key := w.key()
+	key := w.key() // eg /20220624/worker/192.168.193.131-102082
 
 	_, err = w.client.KV.Put(ctx, key, "running", clientv3.WithLease(leaseResp.ID))
 	if err != nil {
@@ -92,7 +92,7 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// 在watchChan产生之前，task发生了增删，也会被感知到，进行同步
-	resp, err := w.client.KV.Get(ctx, w.taskPathPrefix, clientv3.WithPrefix())
+	resp, err := w.client.KV.Get(ctx, w.taskPath, clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[watch] get worker job list failed. %s", err)
 		return
@@ -106,7 +106,7 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 		w.taskChan <- TaskChange{Task: task, Action: 1}
 	}
 	watchStartRevision := resp.Header.Revision + 1
-	watchChan := w.client.Watcher.Watch(ctx, w.taskPathPrefix, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
+	watchChan := w.client.Watcher.Watch(ctx, w.taskPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
 	for {
 		select {
 		case keepResp := <-keepRespChan:
@@ -157,11 +157,11 @@ func NewWorker(node Node) (Worker, error) {
 	pid := os.Getpid()
 	name := fmt.Sprintf("%s-%d", ip, pid)
 	worker := workerInstance{
-		Node:           node,
-		name:           name,
-		closed:         make(chan struct{}),
-		workerPath:     path.Join("/", node.RootName, workerFolder),
-		taskPathPrefix: path.Join(node.RootName, taskFolder),
+		Node:       node,
+		name:       name,
+		closed:     make(chan struct{}),
+		workerPath: path.Join("/", node.RootName, workerFolder),
+		taskPath:   path.Join("/", node.RootName, taskFolder, name),
 	}
 	// 建立连接
 	worker.client, err = clientv3.New(node.EtcdConfig)
