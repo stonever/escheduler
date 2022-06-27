@@ -338,7 +338,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if len(workerList) <= 0 {
 		return errors.New("worker count is zero")
 	}
-	avgWorkLoad := len(taskMap) / len(workerList)
+	var avgWorkLoad = float64(len(taskMap) / len(workerList))
 	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
 	if err != nil {
 		return err
@@ -348,7 +348,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		return err
 	}
 
-	var stickyMap = make(map[string]int)
+	var stickyMap = make(map[string]float64)
 	for _, kvPair := range taskPathResp.Kvs {
 
 		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
@@ -367,7 +367,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-		} else if stickyMap[workerKey] >= avgWorkLoad {
+		} else if stickyMap[workerKey] > avgWorkLoad {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 		} else {
@@ -393,7 +393,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		for _, prefix := range toDeleteTaskKey {
 			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
 			if err != nil {
-				log.Error("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
+				log.Error("failed to delete task in etcd", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
 				return fmt.Errorf("failed to clear task. err:%w", err)
 			}
 			log.Info("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
@@ -401,7 +401,6 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	}
 
 	assignMap := make(map[string][]Task)
-	assignCount := 0
 	for _, value := range taskMap {
 		if len(value.Key) == 0 {
 			assignTo, err := leastLoadBalancer.Balance(string(value.Raw))
@@ -417,9 +416,8 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 			return err
 		}
 		assignMap[assignTo] = append(assignMap[assignTo], value)
-		assignCount++
 	}
-	log.Info("task re-balance total", zap.Int("count", assignCount))
+	var assignCount = 0
 
 	for worker, arr := range assignMap {
 		for _, value := range arr {
@@ -428,9 +426,13 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			assignCount++
+
 		}
 
 	}
+	log.Info("task rebalance count", zap.Int("count", assignCount))
+
 	return nil
 }
 
