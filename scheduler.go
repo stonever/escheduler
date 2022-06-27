@@ -174,7 +174,11 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 		return err
 	}
 	defer election.Resign(ctx)
-	log.Info("get leader", zap.Any("resp", resp), zap.Error(err))
+	var leader string
+	if len(resp.Kvs) > 0 {
+		leader = string(resp.Kvs[0].Value)
+	}
+	log.Info("got leader", zap.Any("leader", leader))
 
 	go s.handleScheduleRequest(ctx)
 	go s.watch(ctx)
@@ -331,6 +335,10 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(workerList) <= 0 {
+		return errors.New("worker count is zero")
+	}
+	avgWorkLoad := len(taskMap) / len(workerList)
 	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
 	if err != nil {
 		return err
@@ -340,6 +348,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		return err
 	}
 
+	var stickyMap = make(map[string]int)
 	for _, kvPair := range taskPathResp.Kvs {
 
 		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
@@ -356,11 +365,16 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 		_, ok = taskMap[string(task)]
 		if !ok {
+			// the invalid task existed in valid worker, so delete it
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+		} else if stickyMap[workerKey] >= avgWorkLoad {
+			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 		} else {
-			// this valid task is existed in valid worker,so give up being re-balance
+			// this valid task is existed in valid worker, so just do it, and give up being re-balance
 			delete(taskMap, string(task))
 			leastLoadBalancer.Inc(workerKey)
+			stickyMap[workerKey]++
 		}
 	}
 	if len(toDeleteWorkerTaskKey) > 0 {
