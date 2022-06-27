@@ -3,7 +3,6 @@ package escheduler
 import (
 	"context"
 	"fmt"
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/stonever/escheduler/log"
 	"github.com/zehuamama/balancer/balancer"
@@ -115,8 +114,7 @@ type Scheduler interface {
 var ErrSchedulerClosed = errors.New("scheduler was closed")
 
 func (s *schedulerInstance) ElectionKey() string {
-	u, _ := uuid.NewUUID()
-	return path.Join("/"+s.RootName, electionFolder, u.String())
+	return path.Join("/"+s.RootName, electionFolder)
 }
 
 // Start The endless loop is for trying to election.
