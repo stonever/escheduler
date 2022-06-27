@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+const (
+	ActionNew     = 1
+	ActionDeleted = 2
+)
+
 type TaskChange struct {
 	Action int // 1 new 2 deleted
 	Task   RawData
@@ -78,14 +83,15 @@ func (w *workerInstance) Stop() {
 	close(w.closed)
 }
 func (w *workerInstance) Add(task RawData) {
-	w.taskChan <- TaskChange{Action: 1, Task: task}
+	w.taskChan <- TaskChange{Action: ActionNew, Task: task}
 }
 func (w *workerInstance) Del(task RawData) {
-	w.taskChan <- TaskChange{Action: 2, Task: task}
+	w.taskChan <- TaskChange{Action: ActionDeleted, Task: task}
 }
 func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3.LeaseKeepAliveResponse) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 在watchChan产生之前，task发生了增删，也会被感知到，进行同步
 	resp, err := w.client.KV.Get(ctx, w.taskPathPrefix, clientv3.WithPrefix())
 	if err != nil {
 		log.Errorf("[watch] get worker job list failed. %s", err)
@@ -100,7 +106,6 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 		w.taskChan <- TaskChange{Task: task, Action: 1}
 	}
 	watchStartRevision := resp.Header.Revision + 1
-	// 在watchChan产生之前，job发生了增删，也会被感知到，进行同步
 	watchChan := w.client.Watcher.Watch(ctx, w.taskPathPrefix, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
 	for {
 		select {
