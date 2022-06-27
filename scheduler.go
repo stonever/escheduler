@@ -188,6 +188,8 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 			electionResp clientv3.GetResponse
 		)
 		select {
+		case <-s.closeChan:
+			return ErrSchedulerClosed
 		case electionResp, ok = <-c:
 			if !ok {
 				break
@@ -360,6 +362,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 		task, err := ParseTaskFromTaskKey(string(kvPair.Key))
 		if err != nil {
+			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			continue
 		}
@@ -367,9 +370,12 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			log.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
 		} else if stickyMap[workerKey] > avgWorkLoad {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			log.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Float64("load", stickyMap[workerKey]), zap.Float64("avg", avgWorkLoad))
+
 		} else {
 			// this valid task is existed in valid worker, so just do it, and give up being re-balance
 			delete(taskMap, string(task))
@@ -380,23 +386,20 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if len(toDeleteWorkerTaskKey) > 0 {
 		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)), zap.Any("expired-worker", toDeleteWorkerTaskKey))
 		for prefix := range toDeleteWorkerTaskKey {
-			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
+			_, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
 			if err != nil {
-				log.Error("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
 				return fmt.Errorf("failed to clear task. err:%w", err)
 			}
 		}
 	}
 	if len(toDeleteTaskKey) > 0 {
 		// get incremental tasks
-		log.Info("to delete expired task ", zap.Int("len", len(toDeleteTaskKey)), zap.Any("array", toDeleteTaskKey))
+		log.Info("to delete expired task ", zap.Int("len", len(toDeleteTaskKey)))
 		for _, prefix := range toDeleteTaskKey {
-			deleteResp, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
+			_, err := s.client.KV.Delete(ctx, prefix)
 			if err != nil {
-				log.Error("failed to delete task in etcd", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
 				return fmt.Errorf("failed to clear task. err:%w", err)
 			}
-			log.Info("task belong to %s total deleted:%d", zap.String("prefix", prefix), zap.Int64("deleted", deleteResp.Deleted))
 		}
 	}
 

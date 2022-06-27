@@ -80,6 +80,7 @@ func (w workerInstance) key() string {
 	return path.Join(w.workerPath, w.name)
 }
 func (w *workerInstance) Stop() {
+	_ = w.client.Lease.Close()
 	close(w.closed)
 }
 func (w *workerInstance) Add(task RawData) {
@@ -109,6 +110,8 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 	watchChan := w.client.Watcher.Watch(ctx, w.taskPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
 	for {
 		select {
+		case <-w.closed:
+			return
 		case keepResp := <-keepRespChan:
 			// 当keepResp==nil说明租约失效，产生的原因可能是ctx cancel或者etcd服务异常
 			if keepResp == nil {
