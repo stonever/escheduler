@@ -16,7 +16,7 @@ func TestMultiScheuler(t *testing.T) {
 	var (
 		ctx, cancel = context.WithTimeout(context.Background(), time.Minute*5)
 	)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go func() {
 			newScheduler(ctx)
@@ -37,7 +37,7 @@ func newScheduler(ctx context.Context) {
 			DialTimeout: 5 * time.Second,
 		},
 		RootName: "20220624",
-		TTL:      60,
+		TTL:      15,
 	}
 	schedConfig := SchedulerConfig{
 		Interval:  time.Second * 60,

@@ -58,7 +58,7 @@ func (s *schedulerInstance) NotifySchedule(request string) {
 	select {
 	case s.scheduleReqChan <- request:
 	default:
-		log.Warn("scheduler is busy, ignored", zap.String("request", request))
+		log.Warn("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
 	}
 }
 
@@ -81,7 +81,7 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 		name:            name,
 		closeChan:       make(chan struct{}),
 		workerPath:      path.Join("/", node.RootName, workerFolder),
-		scheduleReqChan: make(chan string, 0),
+		scheduleReqChan: make(chan string, 1),
 	}
 	// 建立连接
 	scheduler.client, err = clientv3.New(node.EtcdConfig)
@@ -137,7 +137,7 @@ func (s *schedulerInstance) Start(ctx context.Context) error {
 		}
 		err = s.ElectOnce(ctx)
 		if err != nil {
-			log.Error("failed to elect once,err:%s", zap.Error(err))
+			log.Error("failed to elect once", zap.Error(err))
 		}
 	}
 
@@ -162,6 +162,7 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 	defer session.Close()
 	electionKey := s.ElectionKey()
 	election := concurrency.NewElection(session, electionKey)
+	c := election.Observe(ctx)
 
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
 	err = election.Campaign(ctx, s.name)
@@ -171,15 +172,14 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 	}
 	resp, err := election.Leader(ctx)
 	if err != nil {
-		log.Error("failed to get leader, err:%s", zap.Error(err))
+		log.Error("failed to get leader", zap.Error(err))
 		return err
 	}
 	defer election.Resign(ctx)
-	log.Info("get leader, resp:%s", zap.Any("resp", resp), zap.Error(err))
+	log.Info("get leader", zap.Any("resp", resp), zap.Error(err))
 
 	go s.handleScheduleRequest(ctx)
 	go s.watch(ctx)
-	c := election.Observe(ctx)
 	for {
 		var (
 			ok           bool
@@ -190,7 +190,16 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 			if !ok {
 				break
 			}
-			log.Info("watch election got response :%v %t", zap.Any("resp", electionResp), zap.Any("ok", ok))
+			log.Info("watch election got response", zap.Any("resp", electionResp), zap.Any("ok", ok))
+			resp, err = election.Leader(ctx)
+			if err != nil {
+				log.Error("failed to get leader", zap.Error(err))
+				return err
+			}
+			if len(resp.Kvs) > 0 && string(resp.Kvs[0].Value) != s.name {
+				err = errors.New("leader has changed")
+				return err
+			}
 			continue
 		}
 		if !ok {
@@ -256,12 +265,13 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Error("handleScheduleRequest exit, ctx done")
 			return
 		case <-s.scheduleReqChan:
 			time.Sleep(s.config.ReBalanceWait)
 			err := s.doSchedule(ctx)
 			if err != nil {
-				log.Error("doSchedule error: %s", zap.Error(err))
+				log.Error("doSchedule error", zap.Error(err))
 			}
 		}
 	}
@@ -428,6 +438,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Error("watch exit, ctx done")
 			return
 		case <-ticker.C:
 			s.NotifySchedule("periodic task scheduling ")
@@ -441,9 +452,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 					s.NotifySchedule(fmt.Sprintf("delete worker:%s ", watchEvent.Kv.Key))
 					continue
 				}
-
 			}
 		}
-
 	}
 }
