@@ -184,8 +184,7 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 	go s.watch(ctx)
 	for {
 		var (
-			ok           bool
-			electionResp clientv3.GetResponse
+			ok bool
 		)
 		select {
 		case <-s.closeChan:
