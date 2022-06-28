@@ -112,6 +112,7 @@ func (w workerInstance) Start(ctx context.Context, cfg WorkerConfig) (chan TaskC
 		return nil, err
 	}
 	b := recipe.NewDoubleBarrier(s, key, w.MaxNum)
+	log.Info("worker waiting double Barrier", zap.String("worker", w.name), zap.Int("num", w.MaxNum))
 	err = b.Enter()
 	if err != nil {
 		return nil, err

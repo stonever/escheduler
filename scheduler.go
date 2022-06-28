@@ -453,6 +453,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 		return
 	}
 	b := recipe.NewDoubleBarrier(session, key, s.MaxNum)
+	log.Info("scheduler waiting double Barrier", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum))
 	err = b.Enter()
 	if err != nil {
 		s.Stop()
