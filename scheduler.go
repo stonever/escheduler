@@ -194,15 +194,18 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 			if !ok {
 				break
 			}
-			log.Info("watch election got response", zap.Any("resp", electionResp), zap.Any("ok", ok))
 			resp, err = election.Leader(ctx)
 			if err != nil {
 				log.Error("failed to get leader", zap.Error(err))
 				return err
 			}
-			if len(resp.Kvs) > 0 && string(resp.Kvs[0].Value) != s.name {
-				err = errors.New("leader has changed")
-				return err
+			if len(resp.Kvs) > 0 {
+				newLeader := string(resp.Kvs[0].Value)
+				log.Info("query new leader", zap.String("leader", newLeader), zap.String("me", s.name))
+				if newLeader != s.name {
+					err = errors.New("leader has changed, is not me")
+					return err
+				}
 			}
 			continue
 		}
