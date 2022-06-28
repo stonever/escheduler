@@ -189,7 +189,7 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 		select {
 		case <-s.closeChan:
 			return ErrSchedulerClosed
-		case electionResp, ok = <-c:
+		case _, ok = <-c:
 			if !ok {
 				break
 			}
