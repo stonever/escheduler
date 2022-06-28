@@ -22,5 +22,8 @@ func (n *Node) Validation() error {
 	if len(n.RootName) == 0 {
 		return errors.New("RootName is required")
 	}
+	if n.MaxNum < 2 {
+		return errors.Errorf("node maximum is %d <2 ", n.MaxNum)
+	}
 	return nil
 }
