@@ -79,7 +79,7 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 		config:          config,
 		name:            name,
 		closeChan:       make(chan struct{}),
-		workerPath:      path.Join("/", node.RootName, workerFolder),
+		workerPath:      path.Join("/", node.RootName, workerFolder) + "/",
 		scheduleReqChan: make(chan string, 1),
 	}
 	// 建立连接
