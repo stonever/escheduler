@@ -5,12 +5,20 @@ import (
 	"strings"
 )
 
-func ParseTaskFromTaskKey(key string) (RawData, error) {
+func ParseTaskFromKV(key []byte, value []byte) (task Task, err error) {
+	task.Abbr, err = ParseTaskAbbrFromTaskKey(string(key))
+	if err != nil {
+		return
+	}
+	task.Raw = value
+	return task, nil
+}
+func ParseTaskAbbrFromTaskKey(key string) (string, error) {
 	arr := strings.SplitAfterN(key, "/", 5)
 	if len(arr) < 5 {
-		return nil, errors.New("invalid job :" + key)
+		return "", errors.New("invalid task key :" + key)
 	}
-	return RawData(arr[4]), nil
+	return arr[4], nil
 }
 func ParseWorkerFromWorkerKey(key string) (string, error) {
 	arr := strings.Split(key, "/")

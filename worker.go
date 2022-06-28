@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
+	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
+	"go.uber.org/zap"
 	"os"
 	"path"
 	"time"
@@ -19,7 +22,7 @@ const (
 
 type TaskChange struct {
 	Action int // 1 new 2 deleted
-	Task   RawData
+	Task   Task
 }
 
 // Worker instances are used to handle individual task.
@@ -30,7 +33,7 @@ type TaskChange struct {
 // ensure that all state is safely protected against race conditions.
 type Worker interface {
 	// Start is run at the beginning of a new session, before ConsumeClaim.
-	Start(ctx context.Context) (chan TaskChange, error)
+	Start(ctx context.Context, cfg WorkerConfig) (chan TaskChange, error)
 	Stop()
 }
 
@@ -45,7 +48,20 @@ type workerInstance struct {
 	taskPath   string // eg. 20220624/task/192.168.193.131-101576
 }
 
-func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
+// GetWorkerBarrierName /kline-pump/20220628/worker_barrier
+func GetWorkerBarrierName(rootName string) string {
+	return path.Join("/", rootName, workerBarrier)
+}
+
+// GetSchedulerBarrierName /kline-pump/20220628/scheduler_barrier
+func GetSchedulerBarrierName(rootName string) string {
+	return path.Join("/", rootName, schedulerBarrier)
+}
+
+type WorkerConfig struct {
+}
+
+func (w workerInstance) Start(ctx context.Context, cfg WorkerConfig) (chan TaskChange, error) {
 	var (
 		leaseResp    *clientv3.LeaseGrantResponse
 		keepRespChan <-chan *clientv3.LeaseKeepAliveResponse
@@ -54,7 +70,7 @@ func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
 	// 创建租约
 	leaseResp, err = w.client.Lease.Grant(ctx, w.TTL)
 	if err != nil {
-		log.Errorf("create worker alive lease error:%s", err)
+		err = errors.Wrapf(err, "create worker alive lease error")
 		time.Sleep(time.Second)
 		return nil, err
 	}
@@ -62,16 +78,46 @@ func (w workerInstance) Start(ctx context.Context) (chan TaskChange, error) {
 	if err != nil {
 		time.Sleep(time.Second)
 		return nil, err
-
 	}
+
 	// 注册到etcd
 	key := w.key() // eg /20220624/worker/192.168.193.131-102082
-
 	_, err = w.client.KV.Put(ctx, key, "running", clientv3.WithLease(leaseResp.ID))
 	if err != nil {
 		return nil, err
 	}
-
+	//for {
+	//	//time.Sleep(time.Millisecond * 100)
+	//	barrierName := GetSchedulerBarrierName(w.RootName)
+	//	resp, err := w.client.KV.Get(ctx, barrierName)
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//
+	//	if len(resp.Kvs) == 0 {
+	//		continue
+	//	}
+	//	schedulerBarrier := recipe.NewBarrier(w.client, barrierName)
+	//	err = schedulerBarrier.Wait()
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//	break
+	//}
+	//
+	//log.Info("worker enter schedulerBarrier", zap.String("worker", w.name), zap.String("barrier", barrierName))
+	key = GetWorkerBarrierName(w.RootName)
+	s, err := concurrency.NewSession(w.client)
+	if err != nil {
+		return nil, err
+	}
+	b := recipe.NewDoubleBarrier(s, key, w.MaxNum)
+	err = b.Enter()
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	log.Info("worker enter double Barrier", zap.String("worker", w.name), zap.Error(err))
 	go w.watch(ctx, keepRespChan)
 	w.taskChan = make(chan TaskChange)
 	return w.taskChan, nil
@@ -81,12 +127,13 @@ func (w workerInstance) key() string {
 }
 func (w *workerInstance) Stop() {
 	_ = w.client.Lease.Close()
+	_ = w.client.Close()
 	close(w.closed)
 }
-func (w *workerInstance) Add(task RawData) {
+func (w *workerInstance) Add(task Task) {
 	w.taskChan <- TaskChange{Action: ActionNew, Task: task}
 }
-func (w *workerInstance) Del(task RawData) {
+func (w *workerInstance) Del(task Task) {
 	w.taskChan <- TaskChange{Action: ActionDeleted, Task: task}
 }
 func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3.LeaseKeepAliveResponse) {
@@ -95,16 +142,16 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 	// 在watchChan产生之前，task发生了增删，也会被感知到，进行同步
 	resp, err := w.client.KV.Get(ctx, w.taskPath, clientv3.WithPrefix())
 	if err != nil {
-		log.Errorf("[watch] get worker job list failed. %s", err)
+		err = errors.Wrapf(err, "get worker job list failed")
 		return
 	}
 	for _, kvPair := range resp.Kvs {
-		task, err := ParseTaskFromTaskKey(string(kvPair.Key))
+		task, err := ParseTaskFromKV(kvPair.Key, kvPair.Value)
 		if err != nil {
-			log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", kvPair.Key, err)
+			err = errors.Wrapf(err, "Unmarshal task value:%s", kvPair.Key)
 			continue
 		}
-		w.taskChan <- TaskChange{Task: task, Action: 1}
+		w.taskChan <- TaskChange{Task: task, Action: ActionNew}
 	}
 	watchStartRevision := resp.Header.Revision + 1
 	watchChan := w.client.Watcher.Watch(ctx, w.taskPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
@@ -123,22 +170,22 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 				switch watchEvent.Type {
 				case mvccpb.PUT:
 					// 任务新建事件
-					task, err := ParseTaskFromTaskKey(string(watchEvent.Kv.Key))
+					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
 					if err != nil {
-						log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", watchEvent.Kv.Key, err)
+						log.Error("[WatchJob] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
 						continue
 					}
 					w.Add(task)
 				case mvccpb.DELETE:
-					// 任务新建事件
-					task, err := ParseTaskFromTaskKey(string(watchEvent.Kv.Key))
+					// 任务delete event
+					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
 					if err != nil {
-						log.Errorf("[WatchJob] Unmarshal task value:%s error:%s", watchEvent.Kv.Key, err)
+						log.Error("[WatchJob] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
 						continue
 					}
 					w.Del(task)
 				default:
-					log.Warnf("[WatchJob] 不支持的事件类型:%s", watchEvent.Type)
+					log.Warn("[WatchJob] 不支持的事件类型:%s", zap.Any("event", watchEvent.Type))
 				}
 			}
 		}

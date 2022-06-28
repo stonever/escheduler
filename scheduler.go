@@ -9,6 +9,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
+	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
 	"os"
 	"path"
@@ -18,10 +19,9 @@ import (
 type SchedulerConfig struct {
 	// Interval configures interval of schedule task.
 	// If Interval is <= 0, the default 60 seconds Interval will be used.
-	Interval          time.Duration
-	Generator         func(ctx context.Context) ([]Task, error)
-	ExpectedWorkerNum int
-	ReBalanceWait     time.Duration
+	Interval      time.Duration
+	Generator     Generator
+	ReBalanceWait time.Duration
 }
 
 func (sc SchedulerConfig) Validation() error {
@@ -36,11 +36,11 @@ func (sc SchedulerConfig) Validation() error {
 
 type schedulerInstance struct {
 	Node
-	config    SchedulerConfig
-	lease     clientv3.Lease // 用于操作租约
-	closeChan chan struct{}  //
-
-	name string
+	config          SchedulerConfig
+	lease           clientv3.Lease // 用于操作租约
+	closeChan       chan struct{}  //
+	scheduleBarrier *recipe.Barrier
+	name            string
 
 	// balancer
 	RoundRobinBalancer balancer.Balancer
@@ -211,15 +211,11 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 		}
 	}
 	// It is no longer a leader
+
 	return errors.New("leader is over")
 }
 
-type taskGen func(ctx context.Context) ([]Task, error)
-
-type workerChange struct {
-	Action int    // 1: add 2: delete
-	Worker string // worker name
-}
+type Generator func(ctx context.Context) ([]Task, error)
 
 // taskPath return for example: /20220624/task
 func (s *schedulerInstance) taskPath() string {
@@ -235,8 +231,7 @@ func (s *schedulerInstance) onlineWorkerList(ctx context.Context) (workersWithJo
 	for _, kvPair := range resp.Kvs {
 		worker, err := ParseWorkerFromWorkerKey(string(kvPair.Key))
 		if err != nil {
-
-			log.Error("ParseWorkerFromKey for %s error :%s", zap.ByteString("key", kvPair.Key), zap.Error(err))
+			log.Error("ParseWorkerFromWorkerKey error", zap.ByteString("key", kvPair.Key), zap.Error(err))
 			continue
 		}
 		workers = append(workers, worker)
@@ -271,11 +266,19 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 		case <-ctx.Done():
 			log.Error("handleScheduleRequest exit, ctx done")
 			return
-		case <-s.scheduleReqChan:
-			time.Sleep(s.config.ReBalanceWait)
+		case reason := <-s.scheduleReqChan:
+			if reason != ReasonFirstSchedule {
+				log.Info("doSchedule wait", zap.Duration("wait", s.config.ReBalanceWait))
+				time.Sleep(s.config.ReBalanceWait)
+			}
 			err := s.doSchedule(ctx)
 			if err != nil {
 				log.Error("doSchedule error", zap.Error(err))
+				continue
+			}
+			if reason == ReasonFirstSchedule {
+				//err = s.scheduleBarrier.Release()
+				log.Info("scheduleBarrier released", zap.Error(err))
 			}
 		}
 	}
@@ -291,7 +294,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	log.Info("task total", zap.Int("count", len(taskList)))
 	taskMap := make(map[string]Task)
 	for _, task := range taskList {
-		taskMap[string(task.Raw)] = task
+		taskMap[task.Abbr] = task
 	}
 	// query all online worker in etcd
 	workerList, err := s.onlineWorkerList(ctx)
@@ -360,7 +363,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 			toDeleteWorkerTaskKey[parentPath] = struct{}{}
 			continue
 		}
-		task, err := ParseTaskFromTaskKey(string(kvPair.Key))
+		task, err := ParseTaskAbbrFromTaskKey(string(kvPair.Key))
 		if err != nil {
 			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
@@ -406,7 +409,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	assignMap := make(map[string][]Task)
 	for _, value := range taskMap {
 		if len(value.Key) == 0 {
-			assignTo, err := leastLoadBalancer.Balance(string(value.Raw))
+			assignTo, err := leastLoadBalancer.Balance(string(value.Abbr))
 			if err != nil {
 				return err
 			}
@@ -424,13 +427,12 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 
 	for worker, arr := range assignMap {
 		for _, value := range arr {
-			taskKey := path.Join(s.taskPath(), worker, string(value.Raw))
-			_, err = s.client.KV.Put(ctx, taskKey, "")
+			taskKey := path.Join(s.taskPath(), worker, string(value.Abbr))
+			_, err = s.client.KV.Put(ctx, taskKey, string(value.Raw))
 			if err != nil {
 				return err
 			}
 			assignCount++
-
 		}
 
 	}
@@ -442,11 +444,29 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 // watch :1. watch worker changed and notify
 // 2. periodic  notify
 func (s *schedulerInstance) watch(ctx context.Context) {
-	s.NotifySchedule(fmt.Sprintf("first init"))
+	//barrierName := GetSchedulerBarrierName(s.RootName)
+	//s.scheduleBarrier = recipe.NewBarrier(s.client, barrierName)
+	key := GetWorkerBarrierName(s.RootName)
+	session, err := concurrency.NewSession(s.client)
+	if err != nil {
+		s.Stop()
+		return
+	}
+	b := recipe.NewDoubleBarrier(session, key, s.MaxNum)
+	err = b.Enter()
+	if err != nil {
+		s.Stop()
+		return
+	}
+	_ = session.Close()
+	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.name), zap.Error(err))
+
+	s.NotifySchedule(ReasonFirstSchedule)
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		log.Error("get worker job list failed. %w", zap.Error(err))
 		s.Stop()
+		return
 	}
 	ticker := time.NewTicker(s.config.Interval)
 	defer ticker.Stop()
