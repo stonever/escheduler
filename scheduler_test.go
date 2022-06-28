@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
+	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
 	"sync"
 	"testing"
@@ -38,6 +40,7 @@ func newScheduler(ctx context.Context) {
 		},
 		RootName: "20220624",
 		TTL:      15,
+		MaxNum:   2,
 	}
 	schedConfig := SchedulerConfig{
 		Interval:  time.Second * 60,
@@ -48,12 +51,13 @@ func newScheduler(ctx context.Context) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		c, err := worker.Start(ctx)
+		workerCfg := WorkerConfig{}
+		c, err := worker.Start(ctx, workerCfg)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
 		for v := range c {
-			log.Info("receive", zap.Any("value", v))
+			log.Info("receive", zap.String("abbr", v.Task.Abbr), zap.ByteString("raw", v.Task.Raw))
 		}
 	}()
 	sc, err := NewScheduler(schedConfig, node)
@@ -71,8 +75,8 @@ func tg(ctx context.Context) ([]Task, error) {
 	i := 0
 	for {
 		task := Task{
-			Key: fmt.Sprintf("%d", i),
-			Raw: []byte(fmt.Sprintf("raw data for task %d", i)),
+			Abbr: fmt.Sprintf("%d", i),
+			Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 		}
 		ret = append(ret, task)
 		i++
@@ -81,4 +85,35 @@ func tg(ctx context.Context) ([]Task, error) {
 		}
 	}
 	return ret, nil
+}
+func TestDoubleBarrie(t *testing.T) {
+	node := Node{
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		RootName: "20220624",
+		TTL:      15,
+	}
+	client, err := clientv3.New(node.EtcdConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+
+		go func() {
+			key := "/test_barrier"
+			s, err := concurrency.NewSession(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b := recipe.NewDoubleBarrier(s, key, 1)
+			b.Enter()
+			log.Info("enter...")
+			s.Close()
+		}()
+	}
+	select {}
 }
