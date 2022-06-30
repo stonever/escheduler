@@ -25,21 +25,21 @@ type TaskChange struct {
 	Task   Task
 }
 type WatchEvent interface {
-	CreatedTask() Task
-	DeletedTask() string
+	CreatedTask() (Task, bool)
+	DeletedTask() (string, bool)
 }
 
-func (t TaskChange) CreatedTask() Task {
+func (t TaskChange) CreatedTask() (Task, bool) {
 	if t.Action == ActionNew {
-		return t.Task
+		return t.Task, true
 	}
-	return Task{}
+	return Task{}, false
 }
-func (t TaskChange) DeletedTask() string {
+func (t TaskChange) DeletedTask() (string, bool) {
 	if t.Action == ActionDeleted {
-		return t.Task.Abbr
+		return t.Task.Abbr, true
 	}
-	return ""
+	return "", false
 }
 
 // Worker instances are used to handle individual task.
