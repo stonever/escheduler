@@ -444,6 +444,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 		s.Stop()
 		return
 	}
+
 	_ = session.Close()
 	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.name), zap.Error(err))
 
