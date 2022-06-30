@@ -57,7 +57,7 @@ func newScheduler(ctx context.Context) {
 			log.Fatal(err.Error())
 		}
 		for v := range c {
-			log.Info("receive", zap.String("abbr", v.Task.Abbr), zap.ByteString("raw", v.Task.Raw))
+			log.Info("receive", zap.Any("v", v))
 		}
 	}()
 	sc, err := NewScheduler(schedConfig, node)
@@ -114,6 +114,58 @@ func TestDoubleBarrie(t *testing.T) {
 			log.Info("enter...")
 			s.Close()
 		}()
+	}
+	select {}
+}
+func TestWatchTaskDel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	node := Node{
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		RootName: "20220624",
+		TTL:      15,
+		MaxNum:   2,
+	}
+	schedConfig := SchedulerConfig{
+		Interval: time.Minute,
+		Generator: func(ctx context.Context) (ret []Task, err error) {
+			i := time.Now().Minute()
+			if i%2 == 1 {
+				task := Task{
+					Abbr: fmt.Sprintf("%d", i),
+					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+				}
+				ret = append(ret, task)
+			}
+			return
+		},
+	}
+	go func() {
+		worker, err := NewWorker(node)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		workerCfg := WorkerConfig{}
+		c, err := worker.Start(ctx, workerCfg)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		for v := range c {
+			log.Info("receive", zap.Any("v", v))
+		}
+	}()
+	sc, err := NewScheduler(schedConfig, node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	err = sc.Start(ctx)
+	if err != nil {
+		log.Fatal(err.Error())
 	}
 	select {}
 }

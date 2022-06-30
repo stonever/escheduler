@@ -24,6 +24,23 @@ type TaskChange struct {
 	Action int // 1 new 2 deleted
 	Task   Task
 }
+type WatchEvent interface {
+	CreatedTask() Task
+	DeletedTask() string
+}
+
+func (t TaskChange) CreatedTask() Task {
+	if t.Action == ActionNew {
+		return t.Task
+	}
+	return Task{}
+}
+func (t TaskChange) DeletedTask() string {
+	if t.Action == ActionDeleted {
+		return t.Task.Abbr
+	}
+	return ""
+}
 
 // Worker instances are used to handle individual task.
 // It also provides hooks for your worker session life-cycle and allow you to
@@ -33,7 +50,7 @@ type TaskChange struct {
 // ensure that all state is safely protected against race conditions.
 type Worker interface {
 	// Start is run at the beginning of a new session, before ConsumeClaim.
-	Start(ctx context.Context, cfg WorkerConfig) (chan TaskChange, error)
+	Start(ctx context.Context, cfg WorkerConfig) (chan WatchEvent, error)
 	Stop()
 }
 
@@ -44,7 +61,7 @@ type workerInstance struct {
 
 	// path
 	workerPath string // eg. /20220624/worker
-	taskChan   chan TaskChange
+	taskChan   chan WatchEvent
 	taskPath   string // eg. 20220624/task/192.168.193.131-101576
 }
 
@@ -61,7 +78,7 @@ func GetSchedulerBarrierName(rootName string) string {
 type WorkerConfig struct {
 }
 
-func (w workerInstance) Start(ctx context.Context, cfg WorkerConfig) (chan TaskChange, error) {
+func (w workerInstance) Start(ctx context.Context, cfg WorkerConfig) (chan WatchEvent, error) {
 	var (
 		leaseResp    *clientv3.LeaseGrantResponse
 		keepRespChan <-chan *clientv3.LeaseKeepAliveResponse
@@ -120,7 +137,7 @@ func (w workerInstance) Start(ctx context.Context, cfg WorkerConfig) (chan TaskC
 	defer s.Close()
 	log.Info("worker enter double Barrier", zap.String("worker", w.name), zap.Error(err))
 	go w.watch(ctx, keepRespChan)
-	w.taskChan = make(chan TaskChange)
+	w.taskChan = make(chan WatchEvent)
 	return w.taskChan, nil
 }
 func (w workerInstance) key() string {
