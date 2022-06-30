@@ -56,6 +56,7 @@ type schedulerInstance struct {
 func (s *schedulerInstance) NotifySchedule(request string) {
 	select {
 	case s.scheduleReqChan <- request:
+		log.Info("sent schedule request", zap.String("request", request))
 	default:
 		log.Warn("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
 	}
@@ -67,7 +68,7 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
 	}
-	// todo
+
 	ip, err := GetLocalIP()
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
@@ -125,6 +126,9 @@ func (s *schedulerInstance) Start(ctx context.Context) error {
 	var (
 		err error
 	)
+	ctx, cancel := context.WithCancel(ctx)
+	defer s.client.Close()
+	defer cancel()
 	for {
 		select {
 		case <-ctx.Done():
@@ -187,6 +191,8 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 			ok bool
 		)
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-s.closeChan:
 			return ErrSchedulerClosed
 		case _, ok = <-c:
@@ -304,35 +310,12 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		log.Error("failed to get leader, err:%s", zap.Error(err))
 		return err
 	}
-	log.Info("worker total ", zap.Int("count", len(workerList)), zap.Any("array", workerList))
+	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
 
 	workerMap := make(map[string]struct{})
 	for _, value := range workerList {
 		workerMap[value] = struct{}{}
 	}
-	// delete task which is belonged to expired workers
-	//workerPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
-	//if err != nil {
-	//	return err
-	//}
-	//for _, kvPair := range workerPathResp.Kvs {
-	//	// kvPair.Key形如/klinefetch/job/ip:172.19.82.35-pid:10888/{"exchange":"binance","assert":"BTC","symbol":"BTCBKRW"}
-	//	// path.Dir(string(kvPair.Key))取出/klinefetch/job/ip:172.19.82.35-pid:10888
-	//	// path.Base取路径的最后一个元素，取出ip:172.19.82.35-pid:10888
-	//	workerKey := ParseWorkerKey(string(kvPair.Key))
-	//	_, ok := workerMap[workerKey]
-	//	if ok {
-	//		continue
-	//	}
-	//	_, err := s.client.KV.Delete(ctx, string(kvPair.Key), clientv3.WithPrefix())
-	//	if err != nil {
-	//		return fmt.Errorf("failed to clear task. err:%w", err)
-	//	}
-	//	_, err = s.client.KV.Delete(ctx, s.taskPath(), clientv3.WithPrefix())
-	//	if err != nil {
-	//		return fmt.Errorf("failed to clear task. err:%w", err)
-	//	}
-	//}
 
 	// delete task which is belonged to expired workers
 	toDeleteTaskKey := make([]string, 0)
