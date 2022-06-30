@@ -51,12 +51,11 @@ func newScheduler(ctx context.Context) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		workerCfg := WorkerConfig{}
-		c, err := worker.Start(ctx, workerCfg)
+		err = worker.Start(ctx)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		for v := range c {
+		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
@@ -150,12 +149,11 @@ func TestWatchTaskDel(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		workerCfg := WorkerConfig{}
-		c, err := worker.Start(ctx, workerCfg)
+		err = worker.Start(ctx)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		for v := range c {
+		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
@@ -167,5 +165,5 @@ func TestWatchTaskDel(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	select {}
+	//select {}
 }

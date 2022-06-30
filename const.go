@@ -10,3 +10,9 @@ const (
 const (
 	ReasonFirstSchedule = "first schedule"
 )
+const (
+	WorkerStatusNew         = "new"
+	WorkerStatusInBarrier   = "in_barrier"
+	WorkerStatusLeftBarrier = "left_barrier"
+	WorkerStatusDead        = "dead"
+)
