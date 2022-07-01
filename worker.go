@@ -2,6 +2,7 @@ package escheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/stonever/escheduler/log"
@@ -29,6 +30,12 @@ type TaskChange struct {
 	Action int // 1 new 2 deleted
 	Task   Task
 }
+
+func (t TaskChange) String() string {
+	str, _ := json.Marshal(t)
+	return string(str)
+}
+
 type WatchEvent interface {
 	CreatedTask() (Task, bool)
 	DeletedTask() (string, bool)

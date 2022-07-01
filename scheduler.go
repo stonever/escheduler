@@ -372,7 +372,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 	}
 	if len(toDeleteWorkerTaskKey) > 0 {
-		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)), zap.Any("expired-worker", toDeleteWorkerTaskKey))
+		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)))
 		for prefix := range toDeleteWorkerTaskKey {
 			_, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
 			if err != nil {
@@ -441,6 +441,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 	log.Info("scheduler waiting double Barrier", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum))
 	err = b.Enter()
 	if err != nil {
+		log.Error("scheduler enter double Barrier error", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum), zap.Error(err))
 		s.Stop()
 		return
 	}

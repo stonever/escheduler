@@ -27,7 +27,7 @@ func TestWorkerStatus(t *testing.T) {
 	schedConfig := SchedulerConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
-			for i := 0; i < 2; i++ {
+			for i := 0; i < 3; i++ {
 				task := Task{
 					Abbr: fmt.Sprintf("%d", i),
 					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
@@ -45,6 +45,10 @@ func TestWorkerStatus(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
+	worker3, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 	eventC1 := worker1.WatchTask()
 	eventC2 := worker2.WatchTask()
 	go func() {
@@ -56,6 +60,12 @@ func TestWorkerStatus(t *testing.T) {
 	}()
 	go func() {
 		err = worker2.Start(ctx)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	}()
+	go func() {
+		err = worker3.Start(ctx)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -81,11 +91,14 @@ func TestWorkerStatus(t *testing.T) {
 	Convey("switch to WorkerStatusInBarrier ", t, func() {
 		So(status, ShouldEqual, WorkerStatusInBarrier)
 	})
-	task := <-eventC1
-	Convey("worker1 received one task", t, func() {
-		So(task, ShouldNotBeEmpty)
-		So(len(eventC1), ShouldEqual, 0)
-	})
+	go func() {
+		task := <-eventC1
+		Convey("worker1 received one task", t, func() {
+			So(task, ShouldNotBeEmpty)
+			So(len(eventC1), ShouldEqual, 0)
+		})
+	}()
+
 	err = worker1.TryLeaveBarrier()
 	Convey("worker status switch to running ", t, func() {
 		So(err, ShouldBeNil)
@@ -98,12 +111,24 @@ func TestWorkerStatus(t *testing.T) {
 
 		})
 	}
-	task = <-eventC2
-	Convey("worker2 received one task", t, func() {
-		So(task, ShouldNotBeEmpty)
-		So(len(eventC1), ShouldEqual, 0)
-	})
+	go func() {
+		task := <-eventC2
+		Convey("worker2 received one task", t, func() {
+			So(task, ShouldNotBeEmpty)
+			So(len(eventC1), ShouldEqual, 0)
+		})
+	}()
+
 	err = worker2.TryLeaveBarrier()
+	Convey("worker status switch to running ", t, func() {
+		So(err, ShouldBeNil)
+	})
+
+	err = worker2.TryLeaveBarrier()
+	Convey("worker status switch to running ", t, func() {
+		So(err, ShouldBeNil)
+	})
+	err = worker3.TryLeaveBarrier()
 	Convey("worker status switch to running ", t, func() {
 		So(err, ShouldBeNil)
 	})
@@ -117,4 +142,5 @@ func TestWorkerStatus(t *testing.T) {
 	Convey("worker status switch to dead ", t, func() {
 		So(status, ShouldEqual, WorkerStatusDead)
 	})
+
 }
