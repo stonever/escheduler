@@ -10,9 +10,10 @@ type Node struct {
 	RootName   string
 	// TTL configures the session's TTL in seconds.
 	// If TTL is <= 0, the default 60 seconds TTL will be used.
-	TTL    int64
-	client *clientv3.Client
-	MaxNum int
+	TTL        int64
+	client     *clientv3.Client
+	MaxNum     int
+	CustomName string // if not set, default {ip}-{pid}
 }
 
 func (n *Node) Validation() error {

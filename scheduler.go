@@ -8,6 +8,7 @@ import (
 	"github.com/zehuamama/balancer/balancer"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/clientv3util"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
@@ -49,8 +50,6 @@ type schedulerInstance struct {
 
 	// path
 	workerPath string
-	//
-	onlineWorkerNum int
 }
 
 func (s *schedulerInstance) NotifySchedule(request string) {
@@ -139,8 +138,9 @@ func (s *schedulerInstance) Start(ctx context.Context) error {
 		}
 		err = s.ElectOnce(ctx)
 		if err != nil {
-			log.Error("failed to elect once", zap.Error(err))
+			log.Error("failed to elect once, try again", zap.Error(err))
 		}
+		time.Sleep(time.Minute)
 	}
 
 }
@@ -154,11 +154,11 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 	)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	// session的lease租约有效期设为30s，节点异常，最长等待15s，集群会产生新的leader执行调度
 	session, err = concurrency.NewSession(s.client, concurrency.WithTTL(int(s.TTL)))
 	if err != nil {
 		log.Error("failed to new session,err:%s", zap.Error(err))
-
 		return err
 	}
 	defer session.Close()
@@ -183,9 +183,16 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 		leader = string(resp.Kvs[0].Value)
 	}
 	log.Info("got leader", zap.Any("leader", leader))
+	var errC = make(chan error, 2)
+	go func() {
+		s.handleScheduleRequest(ctx)
+		errC <- errors.New("handleScheduleRequest exit unexpected")
+	}()
+	go func() {
+		s.watch(ctx)
+		errC <- errors.New("watch exit unexpected")
+	}()
 
-	go s.handleScheduleRequest(ctx)
-	go s.watch(ctx)
 	for {
 		var (
 			ok bool
@@ -193,8 +200,8 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-s.closeChan:
-			return ErrSchedulerClosed
+		case err := <-errC:
+			return err
 		case _, ok = <-c:
 			if !ok {
 				break
@@ -286,7 +293,7 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 			}
 			if reason == ReasonFirstSchedule {
 				//err = s.scheduleBarrier.Release()
-				log.Info("scheduleBarrier released", zap.Error(err))
+				log.Info("FirstSchedule done")
 			}
 		}
 	}
@@ -429,31 +436,20 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 // watch :1. watch worker changed and notify
 // 2. periodic  notify
 func (s *schedulerInstance) watch(ctx context.Context) {
-	//barrierName := GetSchedulerBarrierName(s.RootName)
-	//s.scheduleBarrier = recipe.NewBarrier(s.client, barrierName)
-	key := GetWorkerBarrierName(s.RootName)
-	session, err := concurrency.NewSession(s.client)
-	if err != nil {
-		s.Stop()
-		return
+	key := GetWorkerBarrierStatusKey(s.RootName)
+	if resp, _ := s.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
+		log.Info("no need to gotoBarrier", zap.String("worker", s.name), zap.String("barrier status", resp.Kvs[0].String()))
+	} else {
+		err := s.gotoBarrier(ctx)
+		if err != nil {
+			log.Error("failed to gotoBarrier", zap.Error(err))
+		}
 	}
-	b := recipe.NewDoubleBarrier(session, key, s.MaxNum)
-	log.Info("scheduler waiting double Barrier", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum))
-	err = b.Enter()
-	if err != nil {
-		log.Error("scheduler enter double Barrier error", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum), zap.Error(err))
-		s.Stop()
-		return
-	}
-
-	_ = session.Close()
-	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.name), zap.Error(err))
 
 	s.NotifySchedule(ReasonFirstSchedule)
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
-		log.Error("get worker job list failed. %w", zap.Error(err))
-		s.Stop()
+		log.Error("get worker job list failed.", zap.Error(err))
 		return
 	}
 	ticker := time.NewTicker(s.config.Interval)
@@ -480,4 +476,31 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *schedulerInstance) gotoBarrier(ctx context.Context) error {
+	key := GetWorkerBarrierName(s.RootName)
+	session, err := concurrency.NewSession(s.client)
+	if err != nil {
+		log.Error("failed to new session", zap.Error(err))
+		return err
+	}
+	b := recipe.NewDoubleBarrier(session, key, s.MaxNum)
+	log.Info("scheduler waiting double Barrier", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum))
+	err = b.Enter()
+	if err != nil {
+		log.Error("scheduler enter double Barrier error", zap.String("scheduler", s.name), zap.Int("num", s.MaxNum), zap.Error(err))
+		return err
+	}
+	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.name), zap.Error(err))
+	_ = session.Close()
+	log.Info("scheduler left double Barrier", zap.String("scheduler", s.name), zap.Error(err))
+	statusKey := GetWorkerBarrierStatusKey(s.RootName)
+	txnResp, err := s.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, "ReasonFirstSchedule")).Commit()
+	if err != nil {
+		log.Error("failed to set first scheduler", zap.Error(err))
+		return err
+	}
+	log.Info("scheduler set once schedule status done", zap.String("key", statusKey), zap.Bool("Succeeded", txnResp.Succeeded))
+	return nil
 }
