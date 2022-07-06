@@ -303,10 +303,10 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	// start to assign
 	taskList, err := s.config.Generator(ctx)
 	if err != nil {
-		log.Error("failed to get leader, err:%s", zap.Error(err))
+		log.Error("failed to generate all task", zap.Error(err))
 		return err
 	}
-	log.Info("task total", zap.Int("count", len(taskList)))
+	log.Info("generated all tasks", zap.Int("count", len(taskList)))
 	taskMap := make(map[string]Task)
 	for _, task := range taskList {
 		taskMap[task.Abbr] = task
