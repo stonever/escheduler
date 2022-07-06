@@ -117,7 +117,7 @@ func (w *workerInstance) WatchStatus(c chan<- int) {
 	w.Lock()
 	defer w.Unlock()
 	w.watcher = append(w.watcher, c)
-	go w.SendStatus(c, time.Minute)
+	go sendStatus(c, w.status, time.Minute)
 }
 func (w *workerInstance) BroadcastStatus(status int) {
 	w.RLock()
@@ -125,13 +125,12 @@ func (w *workerInstance) BroadcastStatus(status int) {
 	log.Info("BroadcastStatus", zap.Any("status", w.status))
 	w.status = status
 	for _, watcher := range w.watcher {
-		go w.SendStatus(watcher, time.Minute)
+		go sendStatus(watcher, w.status, time.Minute)
 	}
 }
-func (w *workerInstance) SendStatus(c chan<- int, timeout time.Duration) {
+func sendStatus(c chan<- int, status int, timeout time.Duration) {
 	ticker := time.NewTicker(timeout)
 	defer ticker.Stop()
-	status := w.Status()
 	select {
 	case c <- status:
 		return
