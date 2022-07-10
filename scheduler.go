@@ -335,7 +335,16 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if len(workerList) <= 0 {
 		return errors.New("worker count is zero")
 	}
-	var avgWorkLoad = float64(len(taskMap) / len(workerList))
+	var (
+		avgWorkLoad float64
+		taskNotHash float64
+	)
+	for _, value := range taskMap {
+		if len(value.Key) == 0 {
+			taskNotHash++
+		}
+	}
+	avgWorkLoad = taskNotHash / float64(len(workerList))
 	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
 	if err != nil {
 		return err
@@ -361,12 +370,12 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			continue
 		}
-		_, ok = taskMap[string(task)]
+		taskObj, ok := taskMap[string(task)]
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			log.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
-		} else if stickyMap[workerKey] > avgWorkLoad {
+		} else if avgWorkLoad > 0 && stickyMap[workerKey] > avgWorkLoad {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			log.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Float64("load", stickyMap[workerKey]), zap.Float64("avg", avgWorkLoad))
@@ -374,8 +383,10 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		} else {
 			// this valid task is existed in valid worker, so just do it, and give up being re-balance
 			delete(taskMap, string(task))
-			leastLoadBalancer.Inc(workerKey)
-			stickyMap[workerKey]++
+			if len(taskObj.Key) == 0 {
+				leastLoadBalancer.Inc(workerKey)
+				stickyMap[workerKey]++
+			}
 		}
 	}
 	if len(toDeleteWorkerTaskKey) > 0 {

@@ -196,6 +196,10 @@ func TestHashBalancer(t *testing.T) {
 				}
 				ret = append(ret, task)
 			}
+			ret = append(ret, Task{
+				Abbr: fmt.Sprintf("%d", 10),
+				Raw:  []byte(fmt.Sprintf("raw data without key")),
+			})
 			return
 		},
 	}
