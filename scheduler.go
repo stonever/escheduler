@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+var ErrSchedulerClosed = errors.New("scheduler was closed")
+
 type SchedulerConfig struct {
 	// Interval configures interval of schedule task.
 	// If Interval is <= 0, the default 60 seconds Interval will be used.
@@ -90,28 +92,11 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 	return &scheduler, nil
 }
 
-func PeriodSchedule(ctx context.Context, interval time.Duration) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		ticker := time.NewTicker(interval)
-		for {
-			select {
-			case <-ctx.Done():
-				return errors.Wrapf(ctx.Err(), "PeriodSchedule exit")
-			case <-ticker.C:
-
-			}
-		}
-	}
-
-}
-
 type Scheduler interface {
 	Start(ctx context.Context) error
 	NotifySchedule(string)
 	Stop()
 }
-
-var ErrSchedulerClosed = errors.New("scheduler was closed")
 
 func (s *schedulerInstance) ElectionKey() string {
 	return path.Join("/"+s.RootName, electionFolder)
@@ -447,9 +432,9 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 // watch :1. watch worker changed and notify
 // 2. periodic  notify
 func (s *schedulerInstance) watch(ctx context.Context) {
-	key := GetWorkerBarrierStatusKey(s.RootName)
+	key := GetWorkerBarrierLeftKey(s.RootName)
 	if resp, _ := s.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-		log.Info("no need to gotoBarrier", zap.String("worker", s.name), zap.String("barrier status", resp.Kvs[0].String()))
+		log.Info("no need to gotoBarrier", zap.String("worker", s.name), zap.String("barrier status left", resp.Kvs[0].String()))
 	} else {
 		err := s.gotoBarrier(ctx)
 		if err != nil {
@@ -506,10 +491,10 @@ func (s *schedulerInstance) gotoBarrier(ctx context.Context) error {
 	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.name), zap.Error(err))
 	_ = session.Close()
 	log.Info("scheduler left double Barrier", zap.String("scheduler", s.name), zap.Error(err))
-	statusKey := GetWorkerBarrierStatusKey(s.RootName)
-	txnResp, err := s.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, "ReasonFirstSchedule")).Commit()
+	statusKey := GetWorkerBarrierLeftKey(s.RootName)
+	txnResp, err := s.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, time.Now().Format(time.RFC3339))).Commit()
 	if err != nil {
-		log.Error("failed to set first scheduler", zap.Error(err))
+		log.Error("failed to set barrier left", zap.Error(err))
 		return err
 	}
 	log.Info("scheduler set once schedule status done", zap.String("key", statusKey), zap.Bool("Succeeded", txnResp.Succeeded))

@@ -97,9 +97,9 @@ func GetWorkerBarrierName(rootName string) string {
 	return path.Join("/", rootName, workerBarrier)
 }
 
-// GetWorkerBarrierStatusKey /kline-pump-20220628/worker_barrier_status
-func GetWorkerBarrierStatusKey(rootName string) string {
-	return path.Join("/", rootName, "worker_barrier_status")
+// GetWorkerBarrierLeftKey /kline-pump-20220628/worker_barrier_left
+func GetWorkerBarrierLeftKey(rootName string) string {
+	return path.Join("/", rootName, "worker_barrier_left")
 }
 
 // GetSchedulerBarrierName /kline-pump/20220628/scheduler_barrier
@@ -191,7 +191,7 @@ func (w *workerInstance) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		key := GetWorkerBarrierStatusKey(w.RootName)
+		key := GetWorkerBarrierLeftKey(w.RootName)
 		if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
 			log.Info("no need to gotoBarrier", zap.String("worker", w.name), zap.String("barrier status", resp.Kvs[0].String()))
 			w.BroadcastStatus(WorkerStatusInBarrier)
