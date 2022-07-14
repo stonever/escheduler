@@ -127,7 +127,7 @@ func TestWatchTaskDel(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220624",
+		RootName: fmt.Sprintf("kline-pump-%d", time.Now().Unix()),
 		TTL:      15,
 		MaxNum:   2,
 	}
@@ -145,15 +145,17 @@ func TestWatchTaskDel(t *testing.T) {
 			return
 		},
 	}
+	worker, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
 	go func() {
-		worker, err := NewWorker(node)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
 		err = worker.Start(ctx)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
+	}()
+	go func() {
 		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
