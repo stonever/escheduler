@@ -4,8 +4,8 @@ const (
 	electionFolder   = "election"
 	workerFolder     = "worker"
 	taskFolder       = "task"
-	workerBarrier    = "worker_barrier"
-	schedulerBarrier = "scheduler_barrier"
+	workerBarrier    = "worker-barrier"
+	schedulerBarrier = "scheduler-barrier"
 )
 const (
 	ReasonFirstSchedule = "first schedule"

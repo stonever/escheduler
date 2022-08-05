@@ -335,3 +335,85 @@ func TestWorkerStatusDead(t *testing.T) {
 		})
 	}
 }
+func TestWorkerGetAllTask(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
+
+	node := Node{
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		RootName: rootName,
+		TTL:      15,
+		MaxNum:   2 + 1,
+	}
+	schedConfig := SchedulerConfig{
+		Interval: time.Minute,
+		Generator: func(ctx context.Context) (ret []Task, err error) {
+			for i := 0; i < 3; i++ {
+				task := Task{
+					Abbr: fmt.Sprintf("abbr-%d", i),
+					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+				}
+				ret = append(ret, task)
+			}
+			return
+		},
+	}
+	node.CustomName = "worker1"
+	worker1, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	node.CustomName = "worker2"
+
+	worker2, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	go func() {
+		err = worker1.Start(ctx)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+
+	}()
+	go func() {
+		err = worker2.Start(ctx)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	}()
+
+	go func() {
+		sc, err := NewScheduler(schedConfig, node)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		err = sc.Start(ctx)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+	}()
+
+	for {
+		task1, err1 := worker1.Tasks(ctx)
+		task2, err2 := worker2.Tasks(ctx)
+
+		Convey("err!=nil", t, func() {
+			So(err1, ShouldBeNil)
+			So(err2, ShouldBeNil)
+		})
+		Convey("task len", t, func() {
+			So(len(task1), ShouldBeGreaterThanOrEqualTo, 1)
+			So(len(task2), ShouldBeGreaterThanOrEqualTo, 1)
+		})
+		time.Sleep(time.Second)
+	}
+
+}
