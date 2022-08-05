@@ -65,8 +65,9 @@ type Worker interface {
 	// Start is run at the beginning of a new session, before ConsumeClaim.
 	Start(ctx context.Context) error
 	Status() int
-	WatchTask() <-chan WatchEvent
 	WatchStatus(chan<- int)
+	Tasks(ctx context.Context) (map[string]struct{}, error)
+	WatchTask() <-chan WatchEvent
 	TryLeaveBarrier() error
 	Stop()
 }
@@ -86,6 +87,24 @@ type workerInstance struct {
 	isAllRunning bool
 
 	leavingBarrier chan struct{}
+}
+
+func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error) {
+	prefix := w.taskPath
+	ret := make(map[string]struct{})
+	resp, err := w.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get etcd kv")
+	}
+	for _, value := range resp.Kvs {
+		abbr, err := ParseTaskAbbrFromTaskKey(string(value.Key))
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse abbr:%s", value.Key)
+		}
+		ret[abbr] = struct{}{}
+
+	}
+	return ret, nil
 }
 
 func (w *workerInstance) WatchTask() <-chan WatchEvent {
