@@ -349,7 +349,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 
 	}
-	log.Info("task rebalance count", zap.Int("count", assignCount), zap.Any("assignMap", assignMap))
+	log.Info("task rebalance count", zap.Int("count", assignCount), zap.Any("assignMap", assignMap), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
 
 	return nil
 }
