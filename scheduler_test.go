@@ -368,3 +368,57 @@ func TestWorkerRestart(t *testing.T) {
 	}()
 	select {}
 }
+func TestLoadBalancer(t *testing.T) {
+	ctx := context.Background()
+	node := Node{
+		RootName: "20220809",
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		TTL:    90,
+		MaxNum: 10 + 1,
+	}
+	for workerN := 0; workerN < 10; workerN++ {
+		schedConfig := SchedulerConfig{
+			Interval: time.Second * 10,
+			Generator: func(ctx context.Context) (ret []Task, err error) {
+				for i := 0; i < 13; i++ {
+					task := Task{
+						Abbr: fmt.Sprintf("%d", i),
+						Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					}
+					ret = append(ret, task)
+				}
+				return
+			},
+		}
+		node.CustomName = fmt.Sprintf("worker-%d", workerN)
+
+		s, err := NewScheduler(schedConfig, node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			err := s.Start(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}()
+		worker1, err := NewWorker(node)
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		go func() {
+			err := worker1.Start(ctx)
+			if err != nil {
+				log.Fatal(err.Error())
+			}
+		}()
+
+	}
+	select {}
+
+}
