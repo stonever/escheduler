@@ -304,15 +304,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	}
 	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
 
-	workerMap := make(map[string]struct{})
-	for _, value := range workerList {
-		workerMap[value] = struct{}{}
-	}
-
-	// delete task which is belonged to expired workers
-	toDeleteTaskKey := make([]string, 0)
-	toDeleteWorkerTaskKey := make(map[string]struct{}, 0)
-
+	// /20220809/task
 	taskPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
 	if err != nil {
 		return err
@@ -320,59 +312,10 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if len(workerList) <= 0 {
 		return errors.New("worker count is zero")
 	}
-	var (
-		avgWorkLoad float64
-		taskNotHash float64
-	)
-	for _, value := range taskMap {
-		if len(value.Key) == 0 {
-			taskNotHash++
-		}
-	}
-	avgWorkLoad = taskNotHash / float64(len(workerList))
-	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
+
+	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := getReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
 	if err != nil {
 		return err
-	}
-	leastLoadBalancer, err := balancer.Build(balancer.LeastLoadBalancer, workerList)
-	if err != nil {
-		return err
-	}
-
-	var stickyMap = make(map[string]float64)
-	for _, kvPair := range taskPathResp.Kvs {
-
-		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
-		_, ok := workerMap[workerKey]
-		if !ok {
-			parentPath := path.Dir(string(kvPair.Key))
-			toDeleteWorkerTaskKey[parentPath] = struct{}{}
-			continue
-		}
-		task, err := ParseTaskAbbrFromTaskKey(string(kvPair.Key))
-		if err != nil {
-			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			continue
-		}
-		taskObj, ok := taskMap[string(task)]
-		if !ok {
-			// the invalid task existed in valid worker, so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			log.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
-		} else if avgWorkLoad > 0 && stickyMap[workerKey] > avgWorkLoad {
-			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			log.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Float64("load", stickyMap[workerKey]), zap.Float64("avg", avgWorkLoad))
-
-		} else {
-			// this valid task is existed in valid worker, so just do it, and give up being re-balance
-			delete(taskMap, string(task))
-			if len(taskObj.Key) == 0 {
-				leastLoadBalancer.Inc(workerKey)
-				stickyMap[workerKey]++
-			}
-		}
 	}
 	if len(toDeleteWorkerTaskKey) > 0 {
 		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)))
@@ -394,25 +337,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 	}
 
-	assignMap := make(map[string][]Task)
-	for _, value := range taskMap {
-		if len(value.Key) == 0 {
-			assignTo, err := leastLoadBalancer.Balance(string(value.Abbr))
-			if err != nil {
-				return err
-			}
-			leastLoadBalancer.Inc(assignTo)
-			assignMap[assignTo] = append(assignMap[assignTo], value)
-			continue
-		}
-		assignTo, err := hashBalancer.Balance(value.Key)
-		if err != nil {
-			return err
-		}
-		assignMap[assignTo] = append(assignMap[assignTo], value)
-	}
 	var assignCount = 0
-
 	for worker, arr := range assignMap {
 		for _, value := range arr {
 			taskKey := path.Join(s.taskPath(), worker, string(value.Abbr))
@@ -424,9 +349,100 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		}
 
 	}
-	log.Info("task rebalance count", zap.Int("count", assignCount))
+	log.Info("task rebalance count", zap.Int("count", assignCount), zap.Any("assignMap", assignMap))
 
 	return nil
+}
+
+// getReBalanceResult
+// workerList current online worker list, value is worker's name
+// taskMap current task collection, key is abbr ,value is task
+// taskPathResp current assigned state
+// taskPathResp []kv key: /Root/task/worker-0/task-abbr-1 value: task raw data for task 1
+func getReBalanceResult(workerList []string, taskMap map[string]Task, taskPathResp []*mvccpb.KeyValue) (toDeleteWorkerTaskKey map[string]struct{}, toDeleteTaskKey []string, assignMap map[string][]Task, err error) {
+	// make return params
+	toDeleteTaskKey = make([]string, 0)
+	toDeleteWorkerTaskKey = make(map[string]struct{}, 0)
+	assignMap = make(map[string][]Task)
+
+	workerMap := make(map[string]struct{})
+	for _, value := range workerList {
+		workerMap[value] = struct{}{}
+	}
+	var (
+		avgWorkLoad float64
+		taskNotHash float64
+	)
+	for _, value := range taskMap {
+		if len(value.Key) == 0 {
+			taskNotHash++
+		}
+	}
+
+	avgWorkLoad = taskNotHash / float64(len(workerList))
+	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
+	if err != nil {
+		return
+	}
+	leastLoadBalancer, err := balancer.Build(balancer.LeastLoadBalancer, workerList)
+	if err != nil {
+		return
+	}
+
+	var stickyMap = make(map[string]float64)
+	for index, kvPair := range taskPathResp {
+		if index == len(taskPathResp)-1 {
+			log.Info("")
+		}
+		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
+		_, ok := workerMap[workerKey]
+		if !ok {
+			parentPath := path.Dir(string(kvPair.Key))
+			toDeleteWorkerTaskKey[parentPath] = struct{}{}
+			continue
+		}
+		task, err := ParseTaskAbbrFromTaskKey(string(kvPair.Key))
+		if err != nil {
+			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			continue
+		}
+		taskObj, ok := taskMap[string(task)]
+		if !ok {
+			// the invalid task existed in valid worker, so delete it
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			log.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
+		} else if avgWorkLoad > 0 && stickyMap[workerKey]-avgWorkLoad > 0 {
+			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
+			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
+			log.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Float64("load", stickyMap[workerKey]), zap.Float64("avg", avgWorkLoad))
+		} else {
+			// this valid task is existed in valid worker, so just do it, and give up being re-balance
+			delete(taskMap, string(task))
+			if len(taskObj.Key) == 0 {
+				leastLoadBalancer.Inc(workerKey)
+				stickyMap[workerKey]++
+			}
+		}
+	}
+	for _, value := range taskMap {
+		var assignTo string
+		if len(value.Key) == 0 {
+			assignTo, err = leastLoadBalancer.Balance(string(value.Abbr))
+			if err != nil {
+				return
+			}
+			leastLoadBalancer.Inc(assignTo)
+			assignMap[assignTo] = append(assignMap[assignTo], value)
+			continue
+		}
+		assignTo, err = hashBalancer.Balance(value.Key)
+		if err != nil {
+			return
+		}
+		assignMap[assignTo] = append(assignMap[assignTo], value)
+	}
+	return
 }
 
 // watch :1. watch worker changed and notify
