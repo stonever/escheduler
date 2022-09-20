@@ -63,7 +63,7 @@ func (t TaskChange) DeletedTask() (string, bool) {
 // ensure that all state is safely protected against race conditions.
 type Worker interface {
 	// Start is run at the beginning of a new session, before ConsumeClaim.
-	Start(ctx context.Context) error
+	Start()
 	Status() int
 	WatchStatus(chan<- int)
 	Tasks(ctx context.Context) (map[string]struct{}, error)
@@ -87,6 +87,10 @@ type workerInstance struct {
 	isAllRunning bool
 
 	leavingBarrier chan struct{}
+
+	// goroutine control
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error) {
@@ -141,7 +145,7 @@ func (w *workerInstance) WatchStatus(c chan<- int) {
 func (w *workerInstance) BroadcastStatus(status int) {
 	w.RLock()
 	defer w.RUnlock()
-	log.Info("BroadcastStatus", zap.Any("status", w.status))
+	log.Info("BroadcastStatus", zap.Any("status", w.status), zap.Int("watcher_count", len(w.watcher)))
 	w.status = status
 	for _, watcher := range w.watcher {
 		go sendStatus(watcher, w.status, time.Minute)
@@ -186,25 +190,28 @@ func (w *workerInstance) IsAllRunning() bool {
 	return w.isAllRunning
 }
 
-func (w *workerInstance) Start(ctx context.Context) error {
+func (w *workerInstance) Start() {
 	var (
-		err error
+		err          error
+		ctx          = w.ctx
+		keepRespChan <-chan *clientv3.LeaseKeepAliveResponse
 	)
-	var keepRespChan <-chan *clientv3.LeaseKeepAliveResponse
 	defer w.BroadcastStatus(WorkerStatusDead)
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		default:
 
 		}
-		keepRespChan, err = w.register(ctx, w.workerPath, w.key())
+		err = w.register(ctx, w.workerPath, w.key())
 		if err != nil {
-			log.Error("failed to registerWorker", zap.String("worker name", w.name), zap.Error(err))
+			log.Error("failed to register worker", zap.String("worker name", w.name), zap.Error(err))
 			time.Sleep(time.Second)
 			continue
 		}
+		log.Info("register worker done", zap.String("worker name", w.name))
+
 		w.BroadcastStatus(WorkerStatusRegister)
 		break
 	}
@@ -224,28 +231,15 @@ func (w *workerInstance) Start(ctx context.Context) error {
 	}()
 	c := make(chan int, 1)
 	w.WatchStatus(c)
-	var shouldBreak bool
-	for {
-		if shouldBreak {
+	for status := range c {
+		if status == WorkerStatusInBarrier {
+			w.RemoveWatcher(c)
 			break
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case status, _ := <-c:
-			if status == WorkerStatusNew {
-				return errors.New("got empty status")
-			}
-			if status == WorkerStatusInBarrier {
-				shouldBreak = true
-				break
-			}
-		}
-
 	}
-	log.Info("worker enter double Barrier, begin to watch my task path", zap.String("worker", w.name), zap.Error(err))
+	log.Info("all workers have entered double Barrier, begin to watch my own task path", zap.String("worker", w.name), zap.Error(err))
 	w.watch(ctx, keepRespChan)
-	return nil
+	return
 }
 func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	num := w.MaxNum
@@ -281,6 +275,7 @@ func (w *workerInstance) key() string {
 	return path.Join(w.workerPath, w.name)
 }
 func (w *workerInstance) Stop() {
+	w.cancel()
 	w.Lock()
 	defer w.Unlock()
 	if w.Status() == WorkerStatusDead {
@@ -311,7 +306,7 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 			err = errors.Wrapf(err, "Unmarshal task value:%s", kvPair.Key)
 			continue
 		}
-		w.taskChan <- TaskChange{Task: task, Action: ActionNew}
+		w.Add(task)
 	}
 	watchStartRevision := resp.Header.Revision + 1
 	watchChan := w.client.Watcher.Watch(ctx, w.taskPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
@@ -322,6 +317,7 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 		case keepResp := <-keepRespChan:
 			// 当keepResp==nil说明租约失效，产生的原因可能是ctx cancel或者etcd服务异常
 			if keepResp == nil {
+				log.Error("[watch] got keepResp is nil")
 				return
 			}
 		case watchResp := <-watchChan:
@@ -331,7 +327,7 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 					// 任务新建事件
 					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
 					if err != nil {
-						log.Error("[WatchJob] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
+						log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
 						continue
 					}
 					w.Add(task)
@@ -339,12 +335,12 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 					// 任务delete event
 					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
 					if err != nil {
-						log.Error("[WatchJob] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
+						log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
 						continue
 					}
 					w.Del(task)
 				default:
-					log.Warn("[WatchJob] 不支持的事件类型:%s", zap.Any("event", watchEvent.Type))
+					log.Warn("[watch] unsupported event case:%s", zap.Any("event", watchEvent.Type))
 				}
 			}
 		}
@@ -378,6 +374,7 @@ func NewWorker(node Node) (Worker, error) {
 		status:         WorkerStatusNew,
 		leavingBarrier: make(chan struct{}, 1),
 	}
+	worker.ctx, worker.cancel = context.WithCancel(context.Background())
 	// 建立连接
 	worker.client, err = clientv3.New(node.EtcdConfig)
 	if err != nil {
@@ -390,42 +387,48 @@ func NewWorker(node Node) (Worker, error) {
 // register let multi workers are registered serializable
 // if lock failed, will block rather than return err
 // if reach maximum, return err and retry
-func (w *workerInstance) register(ctx context.Context, workerPath, workerKey string) (<-chan *clientv3.LeaseKeepAliveResponse, error) {
+func (w *workerInstance) register(ctx context.Context, workerPath, workerKey string) error {
 	session, err := concurrency.NewSession(w.client)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to new session")
+		return errors.Wrapf(err, "failed to new session")
 	}
 	defer session.Close()
 	key := getWorkerRegisterMutexKey(w.RootName)
 	m := concurrency.NewMutex(session, key)
 	if err := m.Lock(ctx); err != nil {
-		return nil, errors.Wrapf(err, "failed to lock")
+		return errors.Wrapf(err, "failed to lock")
 	}
 	defer m.Unlock(context.TODO())
 
 	resp, err := w.client.KV.Get(ctx, workerPath, clientv3.WithPrefix(), clientv3.WithKeysOnly())
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(resp.Kvs) >= w.MaxNum-1 {
-		return nil, errors.Wrapf(ErrWorkerNumExceedMaximum, "now worker total is %d >= max is %d", len(resp.Kvs), w.MaxNum-1)
+		return errors.Wrapf(ErrWorkerNumExceedMaximum, "now worker total is %d >= max is %d", len(resp.Kvs), w.MaxNum-1)
 	}
 	// 创建租约
 	leaseResp, err := w.client.Lease.Grant(ctx, w.TTL)
 	if err != nil {
 		err = errors.Wrapf(err, "create worker alive lease error")
-		return nil, err
+		return err
+	}
+	// 注册到etcd
+	_, err = w.client.KV.Put(ctx, workerKey, WorkerValueRunning, clientv3.WithLease(leaseResp.ID))
+	if err != nil {
+		return err
 	}
 	keepRespChan, err := w.client.Lease.KeepAlive(ctx, leaseResp.ID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	// 注册到etcd
-	_, err = w.client.KV.Put(ctx, workerKey, "running", clientv3.WithLease(leaseResp.ID))
-	if err != nil {
-		return nil, err
-	}
-	return keepRespChan, nil
+	go func() {
+		for _ = range keepRespChan {
+		}
+		log.Info("keepRespChan is closed")
+	}()
+
+	return nil
 }
 
 // getWorkerRegisterMutexKey example: /20220704/worker_register_mutex

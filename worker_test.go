@@ -156,23 +156,13 @@ func TestWorkerStatus(t *testing.T) {
 	eventC1 := worker1.WatchTask()
 	eventC2 := worker2.WatchTask()
 	go func() {
-		err = worker1.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-
+		worker1.Start()
 	}()
 	go func() {
-		err = worker2.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker2.Start()
 	}()
 	go func() {
-		err = worker3.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker3.Start()
 	}()
 	go func() {
 		sc, err := NewScheduler(schedConfig, node)
@@ -302,10 +292,7 @@ func startWorker(ctx context.Context, node Node) Worker {
 		log.Fatal(err.Error())
 	}
 	go func() {
-		err = worker.Start(ctx)
-		if err != nil {
-			log.Error(err.Error())
-		}
+		worker.Start()
 	}()
 	return worker
 }
@@ -377,17 +364,10 @@ func TestWorkerGetAllTask(t *testing.T) {
 	}
 
 	go func() {
-		err = worker1.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-
+		worker1.Start()
 	}()
 	go func() {
-		err = worker2.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker2.Start()
 	}()
 
 	go func() {

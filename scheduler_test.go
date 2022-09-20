@@ -52,10 +52,8 @@ func newScheduler(ctx context.Context) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = worker.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker.Start()
+
 		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
@@ -150,10 +148,7 @@ func TestWatchTaskDel(t *testing.T) {
 		log.Fatal(err.Error())
 	}
 	go func() {
-		err = worker.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker.Start()
 	}()
 	go func() {
 		for v := range worker.WatchTask() {
@@ -211,10 +206,8 @@ func TestHashBalancer(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = worker.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker.Start()
+
 		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
@@ -231,10 +224,8 @@ func TestHashBalancer(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = worker.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker.Start()
+
 		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
 		}
@@ -299,23 +290,14 @@ func TestWorkerRestart(t *testing.T) {
 	}
 
 	go func() {
-		err = worker1.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker1.Start()
 
 	}()
 	go func() {
-		err = worker2.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker2.Start()
 	}()
 	go func() {
-		err = worker3.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		worker3.Start()
 	}()
 	go func() {
 		sc, err := NewScheduler(schedConfig, node)
@@ -336,7 +318,7 @@ func TestWorkerRestart(t *testing.T) {
 			select {
 			case <-time.Tick(time.Second * 60):
 				worker1.Stop()
-				worker1.Start(ctx)
+				worker1.Start()
 				eventC1 = worker1.WatchTask()
 			case <-time.Tick(time.Second * 30):
 				err = worker1.TryLeaveBarrier()
@@ -412,10 +394,8 @@ func TestLoadBalancer(t *testing.T) {
 			log.Fatal(err.Error())
 		}
 		go func() {
-			err := worker1.Start(ctx)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
+			worker1.Start()
+
 		}()
 
 	}
