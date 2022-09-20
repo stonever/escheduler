@@ -10,9 +10,9 @@ type Node struct {
 	RootName   string
 	// TTL configures the session's TTL in seconds.
 	// If TTL is <= 0, the default 60 seconds TTL will be used.
-	TTL        int64
+	TTL        int64 // worker registered in etcd
 	client     *clientv3.Client
-	MaxNum     int
+	MaxNum     int    // total worker num
 	CustomName string // if not set, default {ip}-{pid}
 }
 
