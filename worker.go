@@ -192,9 +192,8 @@ func (w *workerInstance) IsAllRunning() bool {
 
 func (w *workerInstance) Start() {
 	var (
-		err          error
-		ctx          = w.ctx
-		keepRespChan <-chan *clientv3.LeaseKeepAliveResponse
+		err error
+		ctx = w.ctx
 	)
 	defer w.BroadcastStatus(WorkerStatusDead)
 	for {
@@ -238,7 +237,10 @@ func (w *workerInstance) Start() {
 		}
 	}
 	log.Info("all workers have entered double Barrier, begin to watch my own task path", zap.String("worker", w.name), zap.Error(err))
-	w.watch(ctx, keepRespChan)
+	err = w.watch(ctx)
+	if err != nil {
+		log.Error("worker watch error", zap.Error(err))
+	}
 	return
 }
 func (w *workerInstance) gotoBarrier(ctx context.Context) error {
@@ -291,16 +293,16 @@ func (w *workerInstance) Add(task Task) {
 func (w *workerInstance) Del(task Task) {
 	w.taskChan <- TaskChange{Action: ActionDeleted, Task: task}
 }
-func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv3.LeaseKeepAliveResponse) {
+func (w *workerInstance) watch(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	// 在watchChan产生之前，task发生了增删，也会被感知到，进行同步
-	resp, err := w.client.KV.Get(ctx, w.taskPath, clientv3.WithPrefix())
+
+	watcher, err := NewWatcher(ctx, w.client, w.taskPath)
 	if err != nil {
-		err = errors.Wrapf(err, "get worker job list failed")
-		return
+		return err
 	}
-	for _, kvPair := range resp.Kvs {
+
+	for _, kvPair := range watcher.IncipientKVs {
 		task, err := ParseTaskFromKV(kvPair.Key, kvPair.Value)
 		if err != nil {
 			err = errors.Wrapf(err, "Unmarshal task value:%s", kvPair.Key)
@@ -308,41 +310,40 @@ func (w *workerInstance) watch(ctx context.Context, keepRespChan <-chan *clientv
 		}
 		w.Add(task)
 	}
-	watchStartRevision := resp.Header.Revision + 1
-	watchChan := w.client.Watcher.Watch(ctx, w.taskPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
+
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case keepResp := <-keepRespChan:
-			// 当keepResp==nil说明租约失效，产生的原因可能是ctx cancel或者etcd服务异常
-			if keepResp == nil {
-				log.Error("[watch] got keepResp is nil")
-				return
+			return nil
+		case <-ticker.C:
+			log.Info("check watcher live", zap.Bool("blocking", watcher.Blocking))
+		case event, ok := <-watcher.EventChan:
+			if !ok {
+				return errors.Errorf("watcher stopped")
 			}
-		case watchResp := <-watchChan:
-			for _, watchEvent := range watchResp.Events {
-				switch watchEvent.Type {
-				case mvccpb.PUT:
-					// 任务新建事件
-					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
-					if err != nil {
-						log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
-						continue
-					}
-					w.Add(task)
-				case mvccpb.DELETE:
-					// 任务delete event
-					task, err := ParseTaskFromKV(watchEvent.Kv.Key, watchEvent.Kv.Value)
-					if err != nil {
-						log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", watchEvent.Kv.Key), zap.Error(err))
-						continue
-					}
-					w.Del(task)
-				default:
-					log.Warn("[watch] unsupported event case:%s", zap.Any("event", watchEvent.Type))
+			switch event.Type {
+			case mvccpb.PUT:
+				// 任务新建事件
+				task, err := ParseTaskFromKV(event.Kv.Key, event.Kv.Value)
+				if err != nil {
+					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
+					continue
 				}
+				w.Add(task)
+			case mvccpb.DELETE:
+				// 任务delete event
+				task, err := ParseTaskFromKV(event.Kv.Key, event.Kv.Value)
+				if err != nil {
+					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
+					continue
+				}
+				w.Del(task)
+			default:
+				log.Warn("[watch] unsupported event case:%s", zap.Any("event", event.Type))
 			}
+
 		}
 	}
 
