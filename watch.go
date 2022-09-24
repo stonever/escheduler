@@ -2,7 +2,6 @@ package escheduler
 
 import (
 	"context"
-	"fmt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"github.com/stonever/escheduler/log"
@@ -56,23 +55,25 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 			log.Info("start watcher...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 			//if ctx done, rch will be closed, for loop will end
 			for n := range rch {
-				log.Info("rch n", zap.String("n", spew.Sdump(n)), zap.String("addr", fmt.Sprintf("%p", rch)))
-
+				if n.Created {
+					log.Info("watcher created")
+				}
 				// 一般情况下，协程的逻辑会阻塞在此
 				if n.CompactRevision > w.revision {
 					w.revision = n.CompactRevision
-					log.Info("update revision to CompactRevision", zap.Int64("new revision", w.revision))
+					log.Info("set revision to CompactRevision", zap.Int64("new revision", w.revision))
 				}
 				// 是否需要更新当前的最新的 revision
 				if n.Header.GetRevision() > w.revision {
 					w.revision = n.Header.GetRevision()
-					log.Info("update revision to new revision", zap.Int64("new revision", w.revision))
 				}
 				if err := n.Err(); err != nil {
-					log.Error("watch response error", zap.Error(err))
+					log.Error("watcher response error", zap.String("response", spew.Sdump(n)))
 					break
 				}
-
+				if n.Canceled {
+					log.Error("watcher canceled", zap.String("response", spew.Sdump(n)))
+				}
 				for _, ev := range n.Events {
 					w.Blocking = true
 					eventChan <- ev // may be  blocked

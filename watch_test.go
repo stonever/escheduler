@@ -25,7 +25,7 @@ func TestNewWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.AfterFunc(time.Minute, func() {
+	time.AfterFunc(time.Minute*3, func() {
 		cancel()
 	})
 	for c := range got.EventChan {
