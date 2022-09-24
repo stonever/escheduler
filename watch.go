@@ -2,6 +2,8 @@ package escheduler
 
 import (
 	"context"
+	"fmt"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -44,16 +46,18 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 		for {
 			select {
 			case <-ctx.Done():
-				log.Info("ctx done.watcher stop", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+				log.Info("ctx done. stop watcher", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 				close(eventChan)
 				return
 			default:
 
 			}
 			rch := client.Watch(ctx, pathPrefix, clientv3.WithPrefix(), clientv3.WithCreatedNotify(), clientv3.WithRev(w.revision))
-			log.Info("start watch...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+			log.Info("start watcher...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 			//if ctx done, rch will be closed, for loop will end
 			for n := range rch {
+				log.Info("rch n", zap.String("n", spew.Sdump(n)), zap.String("addr", fmt.Sprintf("%p", rch)))
+
 				// 一般情况下，协程的逻辑会阻塞在此
 				if n.CompactRevision > w.revision {
 					w.revision = n.CompactRevision
@@ -68,12 +72,14 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 					log.Error("watch response error", zap.Error(err))
 					break
 				}
+
 				for _, ev := range n.Events {
 					w.Blocking = true
 					eventChan <- ev // may be  blocked
 					w.Blocking = false
 				}
 			}
+			log.Info("watcher need to restart", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 
 		}
 	}()
