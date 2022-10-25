@@ -50,7 +50,7 @@ func (t TaskChange) CreatedTask() (Task, bool) {
 }
 func (t TaskChange) DeletedTask() (string, bool) {
 	if t.Action == ActionDeleted {
-		return t.Task.Abbr, true
+		return t.Task.ID, true
 	}
 	return "", false
 }

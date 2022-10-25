@@ -55,7 +55,7 @@ func TestParseTaskFromKV(t *testing.T) {
 				key:   []byte("/20220624/task/192.168.193.131-125075/10"),
 				value: []byte("raw task"),
 			},
-			wantTask: Task{Abbr: "10", Raw: []byte("raw task")},
+			wantTask: Task{ID: "10", Raw: []byte("raw task")},
 			wantErr:  false,
 		},
 	}

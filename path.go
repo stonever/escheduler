@@ -6,7 +6,7 @@ import (
 )
 
 func ParseTaskFromKV(key []byte, value []byte) (task Task, err error) {
-	task.Abbr, err = ParseTaskAbbrFromTaskKey(string(key))
+	task.ID, err = ParseTaskAbbrFromTaskKey(string(key))
 	if err != nil {
 		return
 	}

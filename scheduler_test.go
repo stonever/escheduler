@@ -3,6 +3,7 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"github.com/stonever/balancer/balancer"
 	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
@@ -73,8 +74,8 @@ func tg(ctx context.Context) ([]Task, error) {
 	i := 0
 	for {
 		task := Task{
-			Abbr: fmt.Sprintf("%d", i),
-			Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+			ID:  fmt.Sprintf("%d", i),
+			Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 		}
 		ret = append(ret, task)
 		i++
@@ -135,8 +136,8 @@ func TestWatchTaskDel(t *testing.T) {
 			i := time.Now().Minute()
 			if i%2 == 1 {
 				task := Task{
-					Abbr: fmt.Sprintf("%d", i),
-					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 				}
 				ret = append(ret, task)
 			}
@@ -187,15 +188,15 @@ func TestHashBalancer(t *testing.T) {
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 10; i++ {
 				task := Task{
-					Abbr: fmt.Sprintf("%d", i),
-					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
-					Key:  "ig",
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					Key: "ig",
 				}
 				ret = append(ret, task)
 			}
 			ret = append(ret, Task{
-				Abbr: fmt.Sprintf("%d", 10),
-				Raw:  []byte(fmt.Sprintf("raw data without key")),
+				ID:  fmt.Sprintf("%d", 10),
+				Raw: []byte(fmt.Sprintf("raw data without key")),
 			})
 			return
 		},
@@ -264,8 +265,8 @@ func TestWorkerRestart(t *testing.T) {
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 5; i++ {
 				task := Task{
-					Abbr: fmt.Sprintf("%d", i),
-					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 				}
 				ret = append(ret, task)
 			}
@@ -352,6 +353,7 @@ func TestWorkerRestart(t *testing.T) {
 }
 func TestLoadBalancer(t *testing.T) {
 	ctx := context.Background()
+	workerNum := 3
 	node := Node{
 		RootName: "20220809",
 		EtcdConfig: clientv3.Config{
@@ -360,45 +362,57 @@ func TestLoadBalancer(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		TTL:    90,
-		MaxNum: 10 + 1,
+		TTL:    60,
+		MaxNum: workerNum + 1,
 	}
-	for workerN := 0; workerN < 10; workerN++ {
-		schedConfig := SchedulerConfig{
-			Interval: time.Second * 10,
-			Generator: func(ctx context.Context) (ret []Task, err error) {
-				for i := 0; i < 13; i++ {
+	schedConfig := SchedulerConfig{
+		Interval: time.Second * 10,
+		Generator: func(ctx context.Context) (ret []Task, err error) {
+			for _, group := range []string{"A", "B", "C"} {
+				for i := 0; i < 5; i++ {
 					task := Task{
-						Abbr: fmt.Sprintf("%d", i),
-						Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+						ID:    fmt.Sprintf("%s%d", group, i),
+						Raw:   []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+						Group: group,
 					}
 					ret = append(ret, task)
 				}
-				return
-			},
-		}
-		node.CustomName = fmt.Sprintf("worker-%d", workerN)
+			}
 
-		s, err := NewScheduler(schedConfig, node)
+			return
+		},
+	}
+	s, err := NewScheduler(schedConfig, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		err := s.Start(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		go func() {
-			err := s.Start(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-		}()
+	}()
+	for workerN := 0; workerN < workerNum; workerN++ {
+		node.CustomName = fmt.Sprintf("worker-%d", workerN)
 		worker1, err := NewWorker(node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
 		go func() {
+			//time.AfterFunc(time.Minute*2, func() {
+			//	worker1.Stop()
+			//})
 			worker1.Start()
-
 		}()
 
 	}
 	select {}
 
+}
+func TestLeastLoad(t *testing.T) {
+	workerList := []string{"worker-1", "worker-2", "worker-3"}
+	leastLoadBalancer, _ := balancer.Build(balancer.LeastLoadBalancer, workerList)
+	leastLoadBalancer.Inc("worker-1")
+	res, err := leastLoadBalancer.Balance("")
+	t.Logf(res, err)
 }
