@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"github.com/pkg/errors"
+	"github.com/stonever/balancer/balancer"
 	"github.com/stonever/escheduler/log"
-	"github.com/zehuamama/balancer/balancer"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/clientv3util"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
+	"math/rand"
 	"os"
 	"path"
 	"time"
@@ -52,6 +53,7 @@ type schedulerInstance struct {
 
 	// path
 	workerPath string
+	assigner   Assigner
 }
 
 func (s *schedulerInstance) NotifySchedule(request string) {
@@ -288,13 +290,13 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	// start to assign
 	taskList, err := s.config.Generator(ctx)
 	if err != nil {
-		log.Error("failed to generate all task", zap.Error(err))
+		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
 	}
-	log.Info("generated all tasks", zap.Int("count", len(taskList)))
+	log.Info("succeeded to generate all tasks", zap.Int("count", len(taskList)))
 	taskMap := make(map[string]Task)
 	for _, task := range taskList {
-		taskMap[task.Abbr] = task
+		taskMap[task.ID] = task
 	}
 	// query all online worker in etcd
 	workerList, err := s.onlineWorkerList(ctx)
@@ -313,7 +315,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		return errors.New("worker count is zero")
 	}
 
-	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := getReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
+	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := s.assigner.GetReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
 	if err != nil {
 		return err
 	}
@@ -340,7 +342,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	var assignCount = 0
 	for worker, arr := range assignMap {
 		for _, value := range arr {
-			taskKey := path.Join(s.taskPath(), worker, string(value.Abbr))
+			taskKey := path.Join(s.taskPath(), worker, string(value.ID))
 			_, err = s.client.KV.Put(ctx, taskKey, string(value.Raw))
 			if err != nil {
 				return err
@@ -352,97 +354,6 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	log.Info("task rebalance count", zap.Int("count", assignCount), zap.Any("assignMap", assignMap), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
 
 	return nil
-}
-
-// getReBalanceResult
-// workerList current online worker list, value is worker's name
-// taskMap current task collection, key is abbr ,value is task
-// taskPathResp current assigned state
-// taskPathResp []kv key: /Root/task/worker-0/task-abbr-1 value: task raw data for task 1
-func getReBalanceResult(workerList []string, taskMap map[string]Task, taskPathResp []*mvccpb.KeyValue) (toDeleteWorkerTaskKey map[string]struct{}, toDeleteTaskKey []string, assignMap map[string][]Task, err error) {
-	// make return params
-	toDeleteTaskKey = make([]string, 0)
-	toDeleteWorkerTaskKey = make(map[string]struct{}, 0)
-	assignMap = make(map[string][]Task)
-
-	workerMap := make(map[string]struct{})
-	for _, value := range workerList {
-		workerMap[value] = struct{}{}
-	}
-	var (
-		avgWorkLoad float64
-		taskNotHash float64
-	)
-	for _, value := range taskMap {
-		if len(value.Key) == 0 {
-			taskNotHash++
-		}
-	}
-
-	avgWorkLoad = taskNotHash / float64(len(workerList))
-	hashBalancer, err := balancer.Build(balancer.IPHashBalancer, workerList)
-	if err != nil {
-		return
-	}
-	leastLoadBalancer, err := balancer.Build(balancer.LeastLoadBalancer, workerList)
-	if err != nil {
-		return
-	}
-
-	var stickyMap = make(map[string]float64)
-	for index, kvPair := range taskPathResp {
-		if index == len(taskPathResp)-1 {
-			log.Info("")
-		}
-		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
-		_, ok := workerMap[workerKey]
-		if !ok {
-			parentPath := path.Dir(string(kvPair.Key))
-			toDeleteWorkerTaskKey[parentPath] = struct{}{}
-			continue
-		}
-		task, err := ParseTaskAbbrFromTaskKey(string(kvPair.Key))
-		if err != nil {
-			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			continue
-		}
-		taskObj, ok := taskMap[string(task)]
-		if !ok {
-			// the invalid task existed in valid worker, so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			log.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
-		} else if avgWorkLoad > 0 && stickyMap[workerKey]-avgWorkLoad > 0 {
-			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			log.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Float64("load", stickyMap[workerKey]), zap.Float64("avg", avgWorkLoad))
-		} else {
-			// this valid task is existed in valid worker, so just do it, and give up being re-balance
-			delete(taskMap, string(task))
-			if len(taskObj.Key) == 0 {
-				leastLoadBalancer.Inc(workerKey)
-				stickyMap[workerKey]++
-			}
-		}
-	}
-	for _, value := range taskMap {
-		var assignTo string
-		if len(value.Key) == 0 {
-			assignTo, err = leastLoadBalancer.Balance(string(value.Abbr))
-			if err != nil {
-				return
-			}
-			leastLoadBalancer.Inc(assignTo)
-			assignMap[assignTo] = append(assignMap[assignTo], value)
-			continue
-		}
-		assignTo, err = hashBalancer.Balance(value.Key)
-		if err != nil {
-			return
-		}
-		assignMap[assignTo] = append(assignMap[assignTo], value)
-	}
-	return
 }
 
 // watch :1. watch worker changed and notify
@@ -515,4 +426,16 @@ func (s *schedulerInstance) gotoBarrier(ctx context.Context) error {
 	}
 	log.Info("scheduler set once schedule status done", zap.String("key", statusKey), zap.Bool("Succeeded", txnResp.Succeeded))
 	return nil
+}
+
+// randShuffle Shuffle the order of input slice, then return a new slice without changing the input
+// 使用平均分配策略时，每个group的余数总是会优先分配到第一个worker，如果有n个group，余数都是1,那么first worker会多承担n个任务，这里通过打乱worker的顺序，使余数中的n个任务随机散落在等价的worker中
+func randShuffle[T any](slice []T) []T {
+	var newSlice = make([]T, len(slice))
+	copy(newSlice, slice)
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(newSlice), func(i, j int) {
+		newSlice[i], newSlice[j] = newSlice[j], newSlice[i]
+	})
+	return newSlice
 }

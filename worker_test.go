@@ -129,8 +129,8 @@ func TestWorkerStatus(t *testing.T) {
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 3; i++ {
 				task := Task{
-					Abbr: fmt.Sprintf("%d", i),
-					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 				}
 				ret = append(ret, task)
 			}
@@ -343,8 +343,8 @@ func TestWorkerGetAllTask(t *testing.T) {
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 3; i++ {
 				task := Task{
-					Abbr: fmt.Sprintf("abbr-%d", i),
-					Raw:  []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+					ID:  fmt.Sprintf("ID-%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 				}
 				ret = append(ret, task)
 			}
