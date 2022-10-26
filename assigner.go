@@ -95,6 +95,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			taskNotHash[value.Group]++
 		}
 	}
+	log.Info("taskNotHash group", zap.Any("group", taskNotHash))
 
 	for _, kvPair := range taskPathResp {
 
@@ -112,7 +113,6 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			continue
 		}
-		log.Info("taskNotHash group", zap.Any("group", taskNotHash))
 		taskObj, ok := taskMap[string(task)]
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
