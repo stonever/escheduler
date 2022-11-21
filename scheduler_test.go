@@ -3,36 +3,33 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/stonever/balancer/balancer"
 	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
-	"strconv"
-	"sync"
-	"testing"
-	"time"
 )
 
 func TestMultiScheuler(t *testing.T) {
 	var wg sync.WaitGroup
-	var (
-		ctx, cancel = context.WithTimeout(context.Background(), time.Minute*5)
-	)
+
 	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go func() {
-			newScheduler(ctx)
+			newScheduler()
 			wg.Done()
 		}()
 	}
 	wg.Wait()
-	cancel()
 }
-func newScheduler(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func newScheduler() {
+
 	node := Node{
 		EtcdConfig: clientv3.Config{
 			Endpoints:   []string{"127.0.0.1:2379"},
@@ -63,10 +60,8 @@ func newScheduler(ctx context.Context) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	err = sc.Start(ctx)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
+	sc.Start()
+
 }
 
 func tg(ctx context.Context) ([]Task, error) {
@@ -106,19 +101,25 @@ func TestDoubleBarrie(t *testing.T) {
 			key := "/test_barrier"
 			s, err := concurrency.NewSession(client)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return
 			}
 			b := recipe.NewDoubleBarrier(s, key, 1)
-			b.Enter()
+			err = b.Enter()
+			if err != nil {
+				log.Fatal(err.Error())
+			}
 			log.Info("enter...")
-			s.Close()
+			err = s.Close()
+			if err != nil {
+				log.Fatal(err.Error())
+			}
 		}()
 	}
 	select {}
 }
 func TestWatchTaskDel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
 	node := Node{
 		EtcdConfig: clientv3.Config{
 			Endpoints:   []string{"127.0.0.1:2379"},
@@ -160,18 +161,15 @@ func TestWatchTaskDel(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	err = sc.Start(ctx)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
+	sc.Start()
+
 	//select {}
 }
 
 // TestHashBalancer if all task has has key and are assigned to single worker,
 // if rebalance , will stickey strategy be still effective
 func TestHashBalancer(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
 	node := Node{
 		EtcdConfig: clientv3.Config{
 			Endpoints:   []string{"127.0.0.1:2379"},
@@ -202,7 +200,7 @@ func TestHashBalancer(t *testing.T) {
 		},
 	}
 	go func() {
-		node.CustomName = "aaa"
+		node.Name = "aaa"
 		worker, err := NewWorker(node)
 		if err != nil {
 			log.Fatal(err.Error())
@@ -219,7 +217,7 @@ func TestHashBalancer(t *testing.T) {
 	}()
 	go func() {
 		time.Sleep(time.Second * 30)
-		node.CustomName = "bbb"
+		node.Name = "bbb"
 
 		worker, err := NewWorker(node)
 		if err != nil {
@@ -235,18 +233,15 @@ func TestHashBalancer(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	err = sc.Start(ctx)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
+	sc.Start()
+
 	//select {}
 }
 
 // TestWorkerRestart if all task has key and are assigned to single worker,
 // if rebalance , will stickey strategy be still effective
 func TestWorkerRestart(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
 	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
 
 	node := Node{
@@ -273,18 +268,18 @@ func TestWorkerRestart(t *testing.T) {
 			return
 		},
 	}
-	node.CustomName = "worker1"
+	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	node.CustomName = "worker2"
+	node.Name = "worker2"
 
 	worker2, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	node.CustomName = "worker3"
+	node.Name = "worker3"
 	worker3, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
@@ -305,10 +300,9 @@ func TestWorkerRestart(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = sc.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		sc.Start()
+		log.Fatal("exit")
+
 	}()
 	eventC1 := worker1.WatchTask()
 	eventC2 := worker2.WatchTask()
@@ -352,7 +346,6 @@ func TestWorkerRestart(t *testing.T) {
 	select {}
 }
 func TestLoadBalancer(t *testing.T) {
-	ctx := context.Background()
 	workerNum := 3
 	node := Node{
 		RootName: "20220809",
@@ -387,13 +380,12 @@ func TestLoadBalancer(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() {
-		err := s.Start(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
+		s.Start()
+		log.Fatal("exit")
+
 	}()
 	for workerN := 0; workerN < workerNum; workerN++ {
-		node.CustomName = fmt.Sprintf("worker-%d", workerN)
+		node.Name = fmt.Sprintf("worker-%d", workerN)
 		worker1, err := NewWorker(node)
 		if err != nil {
 			log.Fatal(err.Error())

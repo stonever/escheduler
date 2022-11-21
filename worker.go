@@ -3,7 +3,10 @@ package escheduler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"path"
+	"sync"
+	"time"
+
 	"github.com/pkg/errors"
 	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -11,10 +14,6 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
-	"os"
-	"path"
-	"sync"
-	"time"
 )
 
 const (
@@ -23,7 +22,7 @@ const (
 )
 
 var (
-	ErrWorkerStatusNotInBarrier = errors.New("worker status is not runnable")
+	ErrWorkerStatusNotInBarrier = errors.New("worker status is not in barrier")
 	ErrWorkerNumExceedMaximum   = errors.New("worker num exceed maximum")
 )
 
@@ -74,7 +73,6 @@ type Worker interface {
 
 type workerInstance struct {
 	Node
-	name string
 
 	// path
 	workerPath string // eg. /20220624/worker/
@@ -205,11 +203,11 @@ func (w *workerInstance) Start() {
 		}
 		err = w.register(ctx, w.workerPath, w.key())
 		if err != nil {
-			log.Error("failed to register worker", zap.String("worker name", w.name), zap.Error(err))
+			log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
 			time.Sleep(time.Second)
 			continue
 		}
-		log.Info("register worker done", zap.String("worker name", w.name))
+		log.Info("register worker done", zap.String("worker name", w.Name))
 
 		w.BroadcastStatus(WorkerStatusRegister)
 		break
@@ -218,7 +216,7 @@ func (w *workerInstance) Start() {
 	go func() {
 		key := GetWorkerBarrierLeftKey(w.RootName)
 		if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-			log.Info("no need to gotoBarrier", zap.String("worker", w.name), zap.String("barrier status", resp.Kvs[0].String()))
+			log.Info("no need to gotoBarrier", zap.String("worker", w.Name), zap.String("barrier status", resp.Kvs[0].String()))
 			w.BroadcastStatus(WorkerStatusInBarrier)
 			w.BroadcastStatus(WorkerStatusLeftBarrier)
 			return
@@ -236,7 +234,7 @@ func (w *workerInstance) Start() {
 			break
 		}
 	}
-	log.Info("all workers have entered double Barrier, begin to watch my own task path", zap.String("worker", w.name), zap.Error(err))
+	log.Info("all workers have entered double Barrier, begin to watch my own task path", zap.String("worker", w.Name), zap.Error(err))
 	err = w.watch(ctx)
 	if err != nil {
 		log.Error("worker watch error", zap.Error(err))
@@ -253,7 +251,7 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	defer s.Close()
 
 	b := recipe.NewDoubleBarrier(s, barrier, num)
-	log.Info("worker waiting double Barrier", zap.String("worker", w.name), zap.Int("num", num))
+	log.Info("worker waiting double Barrier", zap.String("worker", w.Name), zap.Int("num", num))
 	err = b.Enter()
 	if err != nil {
 		return err
@@ -274,7 +272,7 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	return nil
 }
 func (w *workerInstance) key() string {
-	return path.Join(w.workerPath, w.name)
+	return path.Join(w.workerPath, w.Name)
 }
 func (w *workerInstance) Stop() {
 	w.cancel()
@@ -355,23 +353,11 @@ func NewWorker(node Node) (Worker, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
 	}
-	var name string
-	if len(node.CustomName) > 0 {
-		name = node.CustomName
-	} else {
-		ip, err := GetLocalIP()
-		if err != nil {
-			return nil, errors.Wrapf(err, "cannot give the name to scheduler")
-		}
-		pid := os.Getpid()
-		name = fmt.Sprintf("%s-%d", ip, pid)
-	}
 
 	worker := workerInstance{
 		Node:           node,
-		name:           name,
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
-		taskPath:       path.Join("/", node.RootName, taskFolder, name) + "/",
+		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",
 		status:         WorkerStatusNew,
 		leavingBarrier: make(chan struct{}, 1),
 	}
@@ -396,10 +382,13 @@ func (w *workerInstance) register(ctx context.Context, workerPath, workerKey str
 	defer session.Close()
 	key := getWorkerRegisterMutexKey(w.RootName)
 	m := concurrency.NewMutex(session, key)
-	if err := m.Lock(ctx); err != nil {
+	err = m.Lock(ctx)
+	if err != nil {
 		return errors.Wrapf(err, "failed to lock")
 	}
-	defer m.Unlock(context.TODO())
+	defer func() {
+		_ = m.Unlock(context.TODO())
+	}()
 
 	resp, err := w.client.KV.Get(ctx, workerPath, clientv3.WithPrefix(), clientv3.WithKeysOnly())
 	if err != nil {

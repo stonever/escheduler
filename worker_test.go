@@ -3,14 +3,15 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
-	"strconv"
-	"testing"
-	"time"
 )
 
 func TestBarrier_AllLeftNewEnter(t *testing.T) {
@@ -32,20 +33,23 @@ func TestBarrier_AllLeftNewEnter(t *testing.T) {
 	go func() {
 		s1, err := concurrency.NewSession(client)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		b1 := recipe.NewDoubleBarrier(s1, GetWorkerBarrierName(node.RootName), node.MaxNum)
 		t.Log("s1 b1 try to enter")
 		err = b1.Enter()
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 
 		t.Log("b1 try to leave")
 
 		err = b1.Leave()
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		t.Log("s1 b left")
 
@@ -53,20 +57,23 @@ func TestBarrier_AllLeftNewEnter(t *testing.T) {
 	go func() {
 		s2, err := concurrency.NewSession(client)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		b1 := recipe.NewDoubleBarrier(s2, GetWorkerBarrierName(node.RootName), node.MaxNum)
 		t.Log("s2 b1 try to enter")
 		err = b1.Enter()
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 
 		t.Log("s2 b1 try to leave")
 
 		err = b1.Leave()
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 		t.Log("s2 b1 left")
 
@@ -109,8 +116,6 @@ func TestBarrier_AllLeftNewEnter(t *testing.T) {
 	t.Log("lastWorker left")
 }
 func TestWorkerStatus(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
 
 	node := Node{
@@ -137,18 +142,18 @@ func TestWorkerStatus(t *testing.T) {
 			return
 		},
 	}
-	node.CustomName = "worker1"
+	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	node.CustomName = "worker2"
+	node.Name = "worker2"
 
 	worker2, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	node.CustomName = "worker3"
+	node.Name = "worker3"
 	worker3, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
@@ -169,10 +174,8 @@ func TestWorkerStatus(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = sc.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		sc.Start()
+
 	}()
 
 	c := make(chan int)
@@ -264,7 +267,7 @@ func TestWorkerTooMuch(t *testing.T) {
 		workers []Worker
 	)
 	for i := 0; i < 5; i++ {
-		node.CustomName = "worker" + strconv.Itoa(i)
+		node.Name = "worker" + strconv.Itoa(i)
 		worker := startWorker(ctx, node)
 		workers = append(workers, worker)
 		time.Sleep(time.Millisecond)
@@ -310,8 +313,9 @@ func TestWorkerStatusDead(t *testing.T) {
 		TTL:      15,
 		MaxNum:   3 + 1,
 	}
-	ctx, _ := context.WithTimeout(context.Background(), time.Second*10)
-	node.CustomName = "worker1"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	node.Name = "worker1"
 	worker1 := startWorker(ctx, node)
 	select {
 	case <-ctx.Done():
@@ -351,12 +355,12 @@ func TestWorkerGetAllTask(t *testing.T) {
 			return
 		},
 	}
-	node.CustomName = "worker1"
+	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	node.CustomName = "worker2"
+	node.Name = "worker2"
 
 	worker2, err := NewWorker(node)
 	if err != nil {
@@ -375,10 +379,8 @@ func TestWorkerGetAllTask(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		err = sc.Start(ctx)
-		if err != nil {
-			log.Fatal(err.Error())
-		}
+		sc.Start()
+
 	}()
 
 	for {
