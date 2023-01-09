@@ -2,6 +2,7 @@ package escheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"path"
@@ -335,9 +336,13 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 
 	var assignCount = 0
 	for worker, arr := range assignMap {
-		for _, value := range arr {
-			taskKey := path.Join(s.taskPath(), worker, string(value.ID))
-			_, err = s.client.KV.Put(ctx, taskKey, string(value.Raw))
+		for _, taskObj := range arr {
+			taskKey := path.Join(s.taskPath(), worker, taskObj.ID)
+			data, err := json.Marshal(taskObj)
+			if err != nil {
+				return err
+			}
+			_, err = s.client.KV.Put(ctx, taskKey, string(data))
 			if err != nil {
 				return err
 			}

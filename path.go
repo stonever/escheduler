@@ -1,17 +1,15 @@
 package escheduler
 
 import (
-	"github.com/pkg/errors"
+	"encoding/json"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
-func ParseTaskFromKV(key []byte, value []byte) (task Task, err error) {
-	task.ID, err = ParseTaskAbbrFromTaskKey(string(key))
-	if err != nil {
-		return
-	}
-	task.Raw = value
-	return task, nil
+func ParseTaskFromValue(value []byte) (task Task, err error) {
+	err = json.Unmarshal(value, &task)
+	return
 }
 func ParseTaskAbbrFromTaskKey(key string) (string, error) {
 	arr := strings.SplitAfterN(key, "/", 5)

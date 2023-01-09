@@ -299,12 +299,13 @@ func (w *workerInstance) watch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
+	// ad existed task
 	for _, kvPair := range watcher.IncipientKVs {
-		task, err := ParseTaskFromKV(kvPair.Key, kvPair.Value)
+		// id = kvPair.Key
+		task, err := ParseTaskFromValue(kvPair.Value)
 		if err != nil {
-			err = errors.Wrapf(err, "Unmarshal task value:%s", kvPair.Key)
-			continue
+			err = errors.Wrapf(err, "Unmarshal task key:%s", kvPair.Key)
+			return err
 		}
 		w.Add(task)
 	}
@@ -324,7 +325,8 @@ func (w *workerInstance) watch(ctx context.Context) error {
 			switch event.Type {
 			case mvccpb.PUT:
 				// 任务新建事件
-				task, err := ParseTaskFromKV(event.Kv.Key, event.Kv.Value)
+				// id = kvPair.Key
+				task, err := ParseTaskFromValue(event.Kv.Value)
 				if err != nil {
 					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
 					continue
@@ -332,7 +334,8 @@ func (w *workerInstance) watch(ctx context.Context) error {
 				w.Add(task)
 			case mvccpb.DELETE:
 				// 任务delete event
-				task, err := ParseTaskFromKV(event.Kv.Key, event.Kv.Value)
+				// id = kvPair.Key
+				task, err := ParseTaskFromValue(event.Kv.Value)
 				if err != nil {
 					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
 					continue

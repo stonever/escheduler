@@ -177,7 +177,7 @@ func TestHashBalancer(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220624",
+		RootName: "20230109",
 		TTL:      15,
 		MaxNum:   2,
 	}
@@ -205,7 +205,7 @@ func TestHashBalancer(t *testing.T) {
 		if err != nil {
 			log.Fatal(err.Error())
 		}
-		worker.Start()
+		go worker.Start()
 
 		for v := range worker.WatchTask() {
 			log.Info("receive", zap.Any("v", v))
