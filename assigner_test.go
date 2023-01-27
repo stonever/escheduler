@@ -8,6 +8,7 @@ import (
 func TestAssigner_GetReBalanceResult(t *testing.T) {
 	var a Assigner
 	workerList := make([]string, 0)
+	workerList = append(workerList, "worker-a", "worker-b", "worker-c")
 	taskPathResp := make([]*mvccpb.KeyValue, 0)
 	taskMap := make(map[string]Task)
 	gotToDeleteWorkerTaskKey, gotToDeleteTaskKey, gotAssignMap, err := a.GetReBalanceResult(workerList, taskMap, taskPathResp)
