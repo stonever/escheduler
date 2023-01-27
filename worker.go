@@ -328,7 +328,7 @@ func (w *workerInstance) watch(ctx context.Context) error {
 				// id = kvPair.Key
 				task, err := ParseTaskFromValue(event.Kv.Value)
 				if err != nil {
-					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
+					log.Error("[watch] failed to parse created task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
 				}
 				w.Add(task)
@@ -337,7 +337,7 @@ func (w *workerInstance) watch(ctx context.Context) error {
 				// id = kvPair.Key
 				task, err := ParseTaskFromValue(event.Kv.Value)
 				if err != nil {
-					log.Error("[watch] Unmarshal task value:%s error:%s", zap.ByteString("key", event.Kv.Key), zap.Error(err))
+					log.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
 				}
 				w.Del(task)

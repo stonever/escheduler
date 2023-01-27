@@ -54,7 +54,7 @@ func (a *Assigner) getLeastLoadBalancer(group string) (balancer.Balancer, error)
 	}
 	return a.leastLoadMap[group], nil
 }
-func (a *Assigner) getWorkerLoadByGroup(group, worker string) uint64 {
+func (a *Assigner) getWorkerLoadByGroup(worker, group string) uint64 {
 	b, err := a.getLeastLoadBalancer(group)
 	if err != nil {
 		return 0
@@ -121,7 +121,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			continue
 		}
 		avgWorkLoad := taskNotHash[taskObj.Group] / float64(len(workerList))
-		stickyLoad := a.getWorkerLoadByGroup(taskObj.Group, workerKey)
+		stickyLoad := a.getWorkerLoadByGroup(workerKey, taskObj.Group)
 		if avgWorkLoad > 0 && float64(stickyLoad)-avgWorkLoad > 0 {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
