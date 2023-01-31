@@ -270,7 +270,7 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 			}
 			err := s.doSchedule(ctx)
 			if err != nil {
-				log.Error("doSchedule error", zap.Error(err))
+				log.Error("doSchedule error,continue", zap.Error(err))
 				continue
 			}
 			if reason == ReasonFirstSchedule {

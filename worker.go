@@ -28,7 +28,7 @@ var (
 
 type TaskChange struct {
 	Action int // 1 new 2 deleted
-	Task   Task
+	Task
 }
 
 func (t TaskChange) String() string {
@@ -288,8 +288,10 @@ func (w *workerInstance) Stop() {
 func (w *workerInstance) Add(task Task) {
 	w.taskChan <- TaskChange{Action: ActionNew, Task: task}
 }
-func (w *workerInstance) Del(task Task) {
-	w.taskChan <- TaskChange{Action: ActionDeleted, Task: task}
+func (w *workerInstance) Del(id string) {
+	var tc = TaskChange{Action: ActionDeleted}
+	tc.ID = id
+	w.taskChan <- tc
 }
 func (w *workerInstance) watch(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -335,12 +337,12 @@ func (w *workerInstance) watch(ctx context.Context) error {
 			case mvccpb.DELETE:
 				// 任务delete event
 				// id = kvPair.Key
-				task, err := ParseTaskFromValue(event.Kv.Value)
+				taskID, err := ParseTaskAbbrFromTaskKey(string(event.Kv.Key))
 				if err != nil {
 					log.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
 				}
-				w.Del(task)
+				w.Del(taskID)
 			default:
 				log.Warn("[watch] unsupported event case:%s", zap.Any("event", event.Type))
 			}
