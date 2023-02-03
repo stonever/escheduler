@@ -300,7 +300,9 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 		return err
 	}
 	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
-
+	if len(workerList) != s.MaxNum-1 {
+		log.Info("worker count not expected", zap.Int("expected", s.MaxNum-1))
+	}
 	// /20220809/task
 	taskPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
 	if err != nil {

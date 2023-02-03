@@ -123,14 +123,6 @@ func GetWorkerBarrierLeftKey(rootName string) string {
 	return path.Join("/", rootName, "worker_barrier_left")
 }
 
-// GetSchedulerBarrierName /kline-pump/20220628/scheduler_barrier
-func GetSchedulerBarrierName(rootName string) string {
-	return path.Join("/", rootName, schedulerBarrier)
-}
-
-type WorkerConfig struct {
-}
-
 func (w *workerInstance) Status() int {
 	return w.status
 }
@@ -207,7 +199,6 @@ func (w *workerInstance) Start() {
 			time.Sleep(time.Second)
 			continue
 		}
-		log.Info("register worker done", zap.String("worker name", w.Name))
 
 		w.BroadcastStatus(WorkerStatusRegister)
 		break
@@ -312,7 +303,7 @@ func (w *workerInstance) watch(ctx context.Context) error {
 		w.Add(task)
 	}
 
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(time.Minute * 10)
 	defer ticker.Stop()
 	for {
 		select {
@@ -420,8 +411,9 @@ func (w *workerInstance) register(ctx context.Context, workerPath, workerKey str
 	go func() {
 		for _ = range keepRespChan {
 		}
-		log.Info("keepRespChan is closed")
+		log.Info("keepRespChan is closed", zap.String("worker key", workerKey))
 	}()
+	log.Info("succeeded to register worker", zap.String("worker key", workerKey), zap.Int64("ttl", w.TTL))
 
 	return nil
 }

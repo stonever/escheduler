@@ -1,11 +1,10 @@
 package escheduler
 
 const (
-	electionFolder   = "election"
-	workerFolder     = "worker"
-	taskFolder       = "task"
-	workerBarrier    = "worker-barrier"
-	schedulerBarrier = "scheduler-barrier"
+	electionFolder = "election"
+	workerFolder   = "worker"
+	taskFolder     = "task"
+	workerBarrier  = "worker-barrier"
 )
 const (
 	ReasonFirstSchedule = "first schedule"
