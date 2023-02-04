@@ -13,7 +13,7 @@ type Assigner struct {
 	sync.Mutex
 	workerList   []string
 	hashBalancer balancer.Balancer
-	leastLoadMap map[string]balancer.Balancer
+	leastLoadMap map[string]balancer.Balancer // each group is given a least-load balancer.
 }
 
 func (a *Assigner) getRandWorkers() []string {
@@ -72,8 +72,7 @@ func (a *Assigner) getWorkerLoadByGroup(worker, group string) uint64 {
 // taskPathResp current assigned state
 // taskPathResp []kv key: /Root/task/worker-0/task-abbr-1 value: task raw data for task 1
 func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Task, taskPathResp []*mvccpb.KeyValue) (toDeleteWorkerTaskKey map[string]struct{}, toDeleteTaskKey []string, assignMap map[string][]Task, err error) {
-	changed := a.reset(workerList)
-	log.Info("assigner update workerList", zap.Bool("changed", changed))
+	a.reset(workerList)
 
 	var (
 		leastLoadBalancer, hashBalancer balancer.Balancer
@@ -143,9 +142,6 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 	}
 	// taskMap is all tasks, key is task's ID ,value is task
 	for _, taskObj := range taskMap {
-		if taskObj.Group == "C" {
-			log.Info("")
-		}
 		var workerKey string
 		if len(taskObj.Key) == 0 {
 			leastLoadBalancer, err = a.GetBalancer(taskObj.Key, taskObj.Group)
@@ -157,7 +153,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			if err != nil {
 				return
 			}
-			log.Info("task assign to worker", zap.String("group", taskObj.Group), zap.String("worker", workerKey))
+			log.Info("assign the task to target worker", zap.String("group", taskObj.Group), zap.String("taskID", taskObj.ID), zap.String("worker", workerKey))
 
 			leastLoadBalancer.Inc(workerKey)
 			assignMap[workerKey] = append(assignMap[workerKey], taskObj)
@@ -176,12 +172,11 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 	return
 }
 
-func (a *Assigner) reset(list []string) bool {
+func (a *Assigner) reset(list []string) {
 	a.Lock()
 	defer a.Unlock()
 
 	a.workerList = list
 	a.leastLoadMap = nil
 	a.hashBalancer = nil
-	return true
 }

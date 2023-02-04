@@ -311,6 +311,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 	if len(workerList) <= 0 {
 		return errors.New("worker count is zero")
 	}
+	log.Info("rebalance workerList", zap.Strings("workerList", workerList))
 
 	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := s.assigner.GetReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
 	if err != nil {
