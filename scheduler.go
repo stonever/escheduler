@@ -107,18 +107,17 @@ func (s *schedulerInstance) ElectionKey() string {
 func (s *schedulerInstance) Start() {
 	var (
 		ctx = s.ctx
+		d   = time.Minute
 	)
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
 		err := s.ElectOnce(ctx)
-		if err != nil {
-			log.Error("failed to elect once, try again", zap.Error(err))
+		if err == context.Canceled {
+			return
 		}
-		time.Sleep(time.Minute)
+		if err != nil {
+			log.Error("failed to elect once, try again...", zap.Error(err))
+		}
+		time.Sleep(d)
 	}
 }
 func (s *schedulerInstance) Stop() {

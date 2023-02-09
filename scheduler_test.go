@@ -16,6 +16,34 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestStopScheduler(t *testing.T) {
+	node := Node{
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		RootName: "20220624",
+		TTL:      15,
+		MaxNum:   2,
+	}
+	schedConfig := SchedulerConfig{
+		Interval:  time.Second * 60,
+		Generator: tg,
+	}
+
+	sc, err := NewScheduler(schedConfig, node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	go func() {
+		time.Sleep(time.Second * 30)
+		sc.Stop()
+	}()
+	sc.Start()
+
+}
 func TestMultiScheuler(t *testing.T) {
 	var wg sync.WaitGroup
 
