@@ -23,6 +23,7 @@ type SchedulerConfig struct {
 	// Interval configures interval of schedule task.
 	// If Interval is <= 0, the default 60 seconds Interval will be used.
 	Interval      time.Duration
+	Timeout       time.Duration // The maximum time to schedule once
 	Generator     Generator
 	ReBalanceWait time.Duration
 }
@@ -266,6 +267,10 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 			if reason != ReasonFirstSchedule {
 				log.Info("doSchedule wait", zap.Duration("wait", s.config.ReBalanceWait))
 				time.Sleep(s.config.ReBalanceWait)
+			}
+			ctx := ctx
+			if s.config.Timeout > 0 {
+				ctx, _ = context.WithTimeout(ctx, s.config.Timeout)
 			}
 			err := s.doSchedule(ctx)
 			if err != nil {

@@ -29,8 +29,9 @@ func TestStopScheduler(t *testing.T) {
 		MaxNum:   2,
 	}
 	schedConfig := SchedulerConfig{
-		Interval:  time.Second * 60,
+		Interval:  time.Second * 10,
 		Generator: tg,
+		Timeout:   time.Minute,
 	}
 
 	sc, err := NewScheduler(schedConfig, node)
