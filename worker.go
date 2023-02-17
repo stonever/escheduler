@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sourcegraph/conc"
@@ -65,8 +65,7 @@ func (t TaskChange) DeletedTask() (string, bool) {
 type Worker interface {
 	Start() // Start is run at the beginning of a new session, before ConsumeClaim.
 	Stop()
-	Status() int
-	WatchStatus(chan<- int)
+	Status() int32
 	Tasks(ctx context.Context) (map[string]struct{}, error)
 	WatchTask() <-chan WatchEvent
 	TryLeaveBarrier() error
@@ -79,10 +78,8 @@ type workerInstance struct {
 	workerPath string // eg. /20220624/worker/
 	taskChan   chan WatchEvent
 	taskPath   string // eg. 20220624/task/192.168.193.131-101576/
-	status     int
-	// watcher subscribe status change of worker
-	watcher []chan<- int
-	sync.RWMutex
+	status     atomic.Int32
+
 	isAllRunning bool
 
 	leavingBarrier chan struct{}
@@ -124,35 +121,10 @@ func GetWorkerBarrierLeftKey(rootName string) string {
 	return path.Join("/", rootName, "worker_barrier_left")
 }
 
-func (w *workerInstance) Status() int {
-	return w.status
+func (w *workerInstance) Status() int32 {
+	return w.status.Load()
 }
-func (w *workerInstance) WatchStatus(c chan<- int) {
-	w.Lock()
-	defer w.Unlock()
-	w.watcher = append(w.watcher, c)
-	go sendStatus(c, w.status, time.Minute)
-}
-func (w *workerInstance) BroadcastStatus(status int) {
-	w.RLock()
-	defer w.RUnlock()
-	log.Info("BroadcastStatus", zap.Any("status", w.status), zap.Int("watcher_count", len(w.watcher)))
-	w.status = status
-	for _, watcher := range w.watcher {
-		go sendStatus(watcher, w.status, time.Minute)
-	}
-}
-func sendStatus(c chan<- int, status int, timeout time.Duration) {
-	ticker := time.NewTicker(timeout)
-	defer ticker.Stop()
-	select {
-	case c <- status:
-		return
-	case <-ticker.C:
-		log.Error("send status to watcher timeout", zap.Duration("timeout", timeout))
-		return
-	}
-}
+
 func (w *workerInstance) keepOnline() {
 	for {
 		select {
@@ -170,21 +142,9 @@ func (w *workerInstance) keepOnline() {
 	}
 
 }
-func (w *workerInstance) RemoveWatcher(c chan int) {
-	w.Lock()
-	defer w.Unlock()
-	i := 0
-	for _, value := range w.watcher {
-		if value != c {
-			w.watcher[i] = value
-			i++
-		}
-	}
-	w.watcher = w.watcher[:i]
-}
 
 func (w *workerInstance) TryLeaveBarrier() error {
-	if w.status == WorkerStatusInBarrier {
+	if w.Status() == WorkerStatusInBarrier {
 		select {
 		case w.leavingBarrier <- struct{}{}:
 		default:
@@ -197,15 +157,19 @@ func (w *workerInstance) TryLeaveBarrier() error {
 func (w *workerInstance) IsAllRunning() bool {
 	return w.isAllRunning
 }
+func (w *workerInstance) SetStatus(status int32) {
 
+	old := w.status.Swap(status)
+	log.Info("SetStatus", zap.Any("new", status), zap.Any("old", old))
+}
 func (w *workerInstance) Start() {
 	var (
 		ctx = w.ctx
 		wg  conc.WaitGroup
 	)
+	defer w.SetStatus(WorkerStatusDead)
 	defer wg.Wait()
 
-	defer w.BroadcastStatus(WorkerStatusDead)
 	wg.Go(func() {
 		w.keepOnline()
 	})
@@ -213,8 +177,8 @@ func (w *workerInstance) Start() {
 		key := GetWorkerBarrierLeftKey(w.RootName)
 		if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
 			log.Info("no need to gotoBarrier", zap.String("worker", w.Name), zap.String("barrier status", resp.Kvs[0].String()))
-			w.BroadcastStatus(WorkerStatusInBarrier)
-			w.BroadcastStatus(WorkerStatusLeftBarrier)
+			w.SetStatus(WorkerStatusInBarrier)
+			w.SetStatus(WorkerStatusLeftBarrier)
 			return
 		}
 		err := w.gotoBarrier(ctx)
@@ -222,15 +186,11 @@ func (w *workerInstance) Start() {
 			log.Error("failed to gotoBarrier", zap.Error(err))
 		}
 	}()
-	c := make(chan int, 1)
-	w.WatchStatus(c)
-	for status := range c {
-		if status == WorkerStatusInBarrier {
-			w.RemoveWatcher(c)
-			break
-		}
+	var status int32
+	for status = 0; status != WorkerStatusInBarrier; status = w.Status() {
+		time.Sleep(time.Millisecond * 500)
 	}
-	log.Info("all workers have entered double Barrier, begin to watch my own task path", zap.String("worker", w.Name))
+	log.Info("all workers have been in double Barrier, begin to watch my own task path", zap.String("worker", w.Name))
 	wg.Go(func() {
 		err := w.watch()
 		if err != nil {
@@ -254,7 +214,7 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.BroadcastStatus(WorkerStatusInBarrier)
+	w.SetStatus(WorkerStatusInBarrier)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -266,21 +226,15 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.BroadcastStatus(WorkerStatusLeftBarrier)
+	w.SetStatus(WorkerStatusLeftBarrier)
 	return nil
 }
 func (w *workerInstance) key() string {
 	return path.Join(w.workerPath, w.Name)
 }
 func (w *workerInstance) Stop() {
-	w.cancel()
-	w.Lock()
-	defer w.Unlock()
-	if w.Status() == WorkerStatusDead {
-		return
-	}
+	w.SetStatus(WorkerStatusDead)
 	_ = w.client.Close()
-	go w.BroadcastStatus(WorkerStatusDead)
 }
 func (w *workerInstance) Add(task Task) {
 	w.taskChan <- TaskChange{Action: ActionNew, Task: task}
@@ -359,9 +313,9 @@ func NewWorker(node Node) (Worker, error) {
 		Node:           node,
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
 		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",
-		status:         WorkerStatusNew,
 		leavingBarrier: make(chan struct{}, 1),
 	}
+	worker.SetStatus(WorkerStatusNew)
 	worker.ctx, worker.cancel = context.WithCancel(context.Background())
 	// pass worker's ctx to client
 	node.EtcdConfig.Context = worker.ctx
@@ -425,7 +379,7 @@ func (w *workerInstance) register() error {
 	watchStartRevision := putResp.Header.Revision + 1
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
 	log.Info("succeeded to register worker", zap.String("worker key", workerKey), zap.Int64("ttl", w.TTL))
-	w.BroadcastStatus(WorkerStatusRegister)
+	w.SetStatus(WorkerStatusRegister)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {

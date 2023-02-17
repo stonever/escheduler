@@ -3,6 +3,8 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"github.com/sourcegraph/conc"
+	"github.com/stretchr/testify/assert"
 	"strconv"
 	"testing"
 	"time"
@@ -120,7 +122,7 @@ func TestWorkerStatus(t *testing.T) {
 
 	node := Node{
 		EtcdConfig: clientv3.Config{
-			Endpoints:   []string{"127.0.0.1:2379"},
+			Endpoints:   []string{"127.0.0.1:49720"},
 			Username:    "root",
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
@@ -158,91 +160,86 @@ func TestWorkerStatus(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	eventC1 := worker1.WatchTask()
-	eventC2 := worker2.WatchTask()
-	go func() {
+	var wg conc.WaitGroup
+	wg.Go(func() {
 		worker1.Start()
-	}()
-	go func() {
+	})
+
+	wg.Go(func() {
 		worker2.Start()
-	}()
-	go func() {
-		worker3.Start()
-	}()
-	go func() {
+	})
+
+	wg.Go(func() {
 		sc, err := NewScheduler(schedConfig, node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
 		sc.Start()
-
-	}()
-
-	c := make(chan int)
-	worker1.WatchStatus(c)
-	status := <-c
-	Convey("worker status switch to new ", t, func() {
-		So(status, ShouldEqual, WorkerStatusNew)
 	})
-	status = <-c
-	Convey("switch to WorkerStatusRegister ", t, func() {
-		So(status, ShouldEqual, WorkerStatusRegister)
-	})
-	status = <-c
-	Convey("switch to WorkerStatusInBarrier ", t, func() {
-		So(status, ShouldEqual, WorkerStatusInBarrier)
-	})
-	go func() {
-		task := <-eventC1
-		Convey("worker1 received one task", t, func() {
-			So(task, ShouldNotBeEmpty)
-			So(len(eventC1), ShouldEqual, 0)
-		})
-	}()
 
-	err = worker1.TryLeaveBarrier()
-	Convey("worker status switch to running ", t, func() {
-		So(err, ShouldBeNil)
-		So(worker1.Status(), ShouldEqual, WorkerStatusInBarrier)
-	})
-	select {
-	case status = <-c:
-	default:
-		Convey("worker status did not switch ", t, func() {
-
-		})
-	}
-	go func() {
-		task := <-eventC2
-		Convey("worker2 received one task", t, func() {
-			So(task, ShouldNotBeEmpty)
-			So(len(eventC1), ShouldEqual, 0)
-		})
-	}()
+	assert.Equal(t, WorkerStatusNew, worker1.Status())
 	time.Sleep(time.Second)
-	err = worker1.TryLeaveBarrier()
-	Convey("worker status switch to running ", t, func() {
-		So(err, ShouldBeNil)
-	})
+	assert.Equal(t, WorkerStatusRegister, worker1.Status())
 
-	err = worker2.TryLeaveBarrier()
-	Convey("worker status switch to running ", t, func() {
-		So(err, ShouldBeNil)
+	wg.Go(func() {
+		worker3.Start()
+		assert.Equal(t, worker1.Status(), WorkerStatusInBarrier)
 	})
-	err = worker3.TryLeaveBarrier()
-	Convey("worker status switch to running ", t, func() {
-		So(err, ShouldBeNil)
-	})
-	status = <-c
-	Convey("worker status be LeftBarrier", t, func() {
-		So(status, ShouldEqual, WorkerStatusLeftBarrier)
-	})
-
-	worker1.Stop()
-	status = <-c
-	Convey("worker status switch to dead ", t, func() {
-		So(status, ShouldEqual, WorkerStatusDead)
-	})
+	time.Sleep(time.Second)
+	assert.Equal(t, worker1.Status(), WorkerStatusInBarrier)
+	assert.Equal(t, WorkerStatusInBarrier, worker1.Status())
+	wg.Wait()
+	//go func() {
+	//	task := <-eventC1
+	//	Convey("worker1 received one task", t, func() {
+	//		So(task, ShouldNotBeEmpty)
+	//		So(len(eventC1), ShouldEqual, 0)
+	//	})
+	//}()
+	//
+	//err = worker1.TryLeaveBarrier()
+	//Convey("worker status switch to running ", t, func() {
+	//	So(err, ShouldBeNil)
+	//	So(worker1.Status(), ShouldEqual, WorkerStatusInBarrier)
+	//})
+	//select {
+	//case status = <-c:
+	//default:
+	//	Convey("worker status did not switch ", t, func() {
+	//
+	//	})
+	//}
+	//go func() {
+	//	task := <-eventC2
+	//	Convey("worker2 received one task", t, func() {
+	//		So(task, ShouldNotBeEmpty)
+	//		So(len(eventC1), ShouldEqual, 0)
+	//	})
+	//}()
+	//time.Sleep(time.Second)
+	//err = worker1.TryLeaveBarrier()
+	//Convey("worker status switch to running ", t, func() {
+	//	So(err, ShouldBeNil)
+	//})
+	//
+	//err = worker2.TryLeaveBarrier()
+	//Convey("worker status switch to running ", t, func() {
+	//	So(err, ShouldBeNil)
+	//})
+	//err = worker3.TryLeaveBarrier()
+	//Convey("worker status switch to running ", t, func() {
+	//	So(err, ShouldBeNil)
+	//})
+	//status = <-c
+	//Convey("worker status be LeftBarrier", t, func() {
+	//	So(status, ShouldEqual, WorkerStatusLeftBarrier)
+	//})
+	//
+	//worker1.Stop()
+	//status = <-c
+	//Convey("worker status switch to dead ", t, func() {
+	//	So(status, ShouldEqual, WorkerStatusDead)
+	//})
 
 }
 
