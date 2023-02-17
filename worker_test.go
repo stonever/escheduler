@@ -399,3 +399,44 @@ func TestWorkerGetAllTask(t *testing.T) {
 	}
 
 }
+func TestWorkerRegister(t *testing.T) {
+
+	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
+
+	node := Node{
+		EtcdConfig: clientv3.Config{
+			Endpoints:   []string{"127.0.0.1:2379"},
+			Username:    "root",
+			Password:    "password",
+			DialTimeout: 5 * time.Second,
+		},
+		RootName: rootName,
+		TTL:      15,
+		MaxNum:   2,
+	}
+	node.Name = "worker1"
+	worker1, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	schedConfig := SchedulerConfig{
+		Interval: time.Minute,
+		Generator: func(ctx context.Context) (ret []Task, err error) {
+			for i := 0; i < 3; i++ {
+				task := Task{
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+				}
+				ret = append(ret, task)
+			}
+			return
+		},
+	}
+
+	sc, err := NewScheduler(schedConfig, node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	go sc.Start()
+	worker1.Start()
+}

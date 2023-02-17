@@ -152,6 +152,8 @@ github.com/smartystreets/assertions v1.2.0 h1:42S6lae5dvLc7BrLu/0ugRtcFVjoJNMC/N
 github.com/smartystreets/assertions v1.2.0/go.mod h1:tcbTF8ujkAEcZ8TElKY+i30BzYlVhC/LOxJk7iOWnoo=
 github.com/smartystreets/goconvey v1.7.2 h1:9RBaZCeXEQ3UselpuwUQHltGVXvdwm6cv1hgR6gDIPg=
 github.com/smartystreets/goconvey v1.7.2/go.mod h1:Vw0tHAZW6lzCRk3xgdin6fKYcG+G3Pg9vgXWeJpQFMM=
+github.com/sourcegraph/conc v0.2.0 h1:96VpOCAtXDCQ8Oycz0ftHqdPyMi8w12ltN4L2noYg7s=
+github.com/sourcegraph/conc v0.2.0/go.mod h1:8lmPpTLA0hsWqw4lw7wS1e694U2tMjRrc1Asvupb4QM=
 github.com/starwander/GoFibonacciHeap v0.0.0-20190508061137-ba2e4f01000a h1:HxQEVn2dC2DyalPmsBVsTRsB05UpBmbgZV2a939iEwE=
 github.com/starwander/GoFibonacciHeap v0.0.0-20190508061137-ba2e4f01000a/go.mod h1:0UZshEHv45sVxpYdRE55cbIVuvbXD3+liaXyrgm1Mr4=
 github.com/stonever/balancer v0.1.1 h1:mS05K/vifhC7w5dpK28uJq7p1FCU3PN7R30HnetnQ9w=

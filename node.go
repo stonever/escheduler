@@ -15,7 +15,7 @@ type Node struct {
 	// If TTL is <= 0, the default 60 seconds TTL will be used.
 	TTL    int64 // worker registered in etcd
 	client *clientv3.Client
-	MaxNum int    // total worker num
+	MaxNum int    // total worker num + 1 scheduler
 	Name   string // if not set, default {ip}-{pid}
 }
 
