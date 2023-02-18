@@ -19,7 +19,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type SchedulerConfig struct {
+type MasterConfig struct {
 	// Interval configures interval of schedule task.
 	// If Interval is <= 0, the default 60 seconds Interval will be used.
 	Interval      time.Duration
@@ -28,7 +28,7 @@ type SchedulerConfig struct {
 	ReBalanceWait time.Duration
 }
 
-func (sc SchedulerConfig) Validation() error {
+func (sc MasterConfig) Validation() error {
 	if sc.Interval == 0 {
 		return errors.New("Interval is required")
 	}
@@ -38,13 +38,11 @@ func (sc SchedulerConfig) Validation() error {
 	return nil
 }
 
-type schedulerInstance struct {
+type master struct {
 	Node
-	ctx             context.Context
-	cancel          context.CancelFunc
-	config          SchedulerConfig
-	lease           clientv3.Lease // 用于操作租约
-	scheduleBarrier *recipe.Barrier
+	ctx    context.Context
+	cancel context.CancelFunc
+	config MasterConfig
 
 	// balancer
 	RoundRobinBalancer balancer.Balancer
@@ -56,17 +54,17 @@ type schedulerInstance struct {
 	assigner   Assigner
 }
 
-func (s *schedulerInstance) NotifySchedule(request string) {
+func (s *master) NotifySchedule(request string) {
 	select {
 	case s.scheduleReqChan <- request:
 		log.Info("sent schedule request", zap.String("request", request))
 	default:
-		log.Warn("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
+		log.Error("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
 	}
 }
 
-// NewScheduler create a scheduler
-func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
+// NewMaster create a scheduler
+func NewMaster(config MasterConfig, node Node) (Master, error) {
 	err := config.Validation()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to validate config")
@@ -76,7 +74,7 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 		return nil, errors.Wrapf(err, "failed to validate node")
 	}
 
-	scheduler := schedulerInstance{
+	scheduler := master{
 		Node:            node,
 		config:          config,
 		workerPath:      path.Join("/", node.RootName, workerFolder) + "/",
@@ -91,13 +89,13 @@ func NewScheduler(config SchedulerConfig, node Node) (Scheduler, error) {
 	return &scheduler, nil
 }
 
-type Scheduler interface {
+type Master interface {
 	Start()
 	NotifySchedule(string)
 	Stop()
 }
 
-func (s *schedulerInstance) ElectionKey() string {
+func (s *master) ElectionKey() string {
 	return path.Join("/"+s.RootName, electionFolder)
 }
 
@@ -105,13 +103,13 @@ func (s *schedulerInstance) ElectionKey() string {
 // lifecycle 1. if outer ctx done, scheduler done
 // 2. if closed by outer or inner ,scheduler done
 // if session down, will be closed by inner
-func (s *schedulerInstance) Start() {
+func (s *master) Start() {
 	var (
 		ctx = s.ctx
 		d   = time.Minute
 	)
 	for {
-		err := s.ElectOnce(ctx)
+		err := s.Campaign(ctx)
 		if err == context.Canceled {
 			return
 		}
@@ -121,27 +119,22 @@ func (s *schedulerInstance) Start() {
 		time.Sleep(d)
 	}
 }
-func (s *schedulerInstance) Stop() {
+func (s *master) Stop() {
 	s.cancel()
 	s.client.Close()
 }
-func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
-	var (
-		session *concurrency.Session
-		err     error
-	)
+func (s *master) Campaign(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// session的lease租约有效期设为30s，节点异常，最长等待15s，集群会产生新的leader执行调度
-	session, err = concurrency.NewSession(s.client, concurrency.WithTTL(int(s.TTL)))
+	session, err := concurrency.NewSession(s.client, concurrency.WithTTL(int(s.TTL)))
 	if err != nil {
 		log.Error("failed to new session,err:%s", zap.Error(err))
 		return err
 	}
-	defer func() {
-		_ = session.Close()
-	}()
+	defer session.Close()
+
 	electionKey := s.ElectionKey()
 	election := concurrency.NewElection(session, electionKey)
 	c := election.Observe(ctx)
@@ -215,11 +208,11 @@ func (s *schedulerInstance) ElectOnce(ctx context.Context) error {
 type Generator func(ctx context.Context) ([]Task, error)
 
 // taskPath return for example: /20220624/task
-func (s *schedulerInstance) taskPath() string {
+func (s *master) taskPath() string {
 	return path.Join("/"+s.RootName, taskFolder)
 }
 
-func (s *schedulerInstance) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
+func (s *master) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		return
@@ -235,7 +228,7 @@ func (s *schedulerInstance) onlineWorkerList(ctx context.Context) (workersWithJo
 	}
 	return workers, nil
 }
-func (s *schedulerInstance) workerList(ctx context.Context) (workersWithJob map[string][]RawData, err error) {
+func (s *master) workerList(ctx context.Context) (workersWithJob map[string][]RawData, err error) {
 	workersWithJob = make(map[string][]RawData)
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
@@ -257,7 +250,7 @@ func (s *schedulerInstance) workerList(ctx context.Context) (workersWithJob map[
 	return workersWithJob, nil
 }
 
-func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
+func (s *master) handleScheduleRequest(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -285,7 +278,7 @@ func (s *schedulerInstance) handleScheduleRequest(ctx context.Context) {
 	}
 }
 
-func (s *schedulerInstance) doSchedule(ctx context.Context) error {
+func (s *master) doSchedule(ctx context.Context) error {
 	// start to assign
 	taskList, err := s.config.Generator(ctx)
 	if err != nil {
@@ -363,7 +356,7 @@ func (s *schedulerInstance) doSchedule(ctx context.Context) error {
 
 // watch :1. watch worker changed and notify
 // 2. periodic  notify
-func (s *schedulerInstance) watch(ctx context.Context) {
+func (s *master) watch(ctx context.Context) {
 	key := GetWorkerBarrierLeftKey(s.RootName)
 	if resp, _ := s.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
 		log.Info("no need to gotoBarrier", zap.String("worker", s.Name), zap.String("barrier status left", resp.Kvs[0].String()))
@@ -406,7 +399,7 @@ func (s *schedulerInstance) watch(ctx context.Context) {
 	}
 }
 
-func (s *schedulerInstance) gotoBarrier(ctx context.Context) error {
+func (s *master) gotoBarrier(ctx context.Context) error {
 	key := GetWorkerBarrierName(s.RootName)
 	session, err := concurrency.NewSession(s.client)
 	if err != nil {

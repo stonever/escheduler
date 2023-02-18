@@ -167,8 +167,8 @@ func (w *workerInstance) Start() {
 		ctx = w.ctx
 		wg  conc.WaitGroup
 	)
-	defer w.SetStatus(WorkerStatusDead)
 	defer wg.Wait()
+	defer w.SetStatus(WorkerStatusDead)
 
 	wg.Go(func() {
 		w.keepOnline()

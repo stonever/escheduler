@@ -28,13 +28,13 @@ func TestStopScheduler(t *testing.T) {
 		TTL:      15,
 		MaxNum:   2,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval:  time.Second * 10,
 		Generator: tg,
 		Timeout:   time.Minute,
 	}
 
-	sc, err := NewScheduler(schedConfig, node)
+	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -51,13 +51,13 @@ func TestMultiScheuler(t *testing.T) {
 	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go func() {
-			newScheduler()
+			newMaster()
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 }
-func newScheduler() {
+func newMaster() {
 
 	node := Node{
 		EtcdConfig: clientv3.Config{
@@ -70,7 +70,7 @@ func newScheduler() {
 		TTL:      15,
 		MaxNum:   2,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval:  time.Second * 60,
 		Generator: tg,
 	}
@@ -85,7 +85,7 @@ func newScheduler() {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
-	sc, err := NewScheduler(schedConfig, node)
+	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -160,7 +160,7 @@ func TestWatchTaskDel(t *testing.T) {
 		TTL:      15,
 		MaxNum:   2,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			i := time.Now().Minute()
@@ -186,7 +186,7 @@ func TestWatchTaskDel(t *testing.T) {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
-	sc, err := NewScheduler(schedConfig, node)
+	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -210,7 +210,7 @@ func TestHashBalancer(t *testing.T) {
 		TTL:      15,
 		MaxNum:   2,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 10; i++ {
@@ -258,7 +258,7 @@ func TestHashBalancer(t *testing.T) {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
-	sc, err := NewScheduler(schedConfig, node)
+	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -284,7 +284,7 @@ func TestWorkerRestart(t *testing.T) {
 		TTL:      15,
 		MaxNum:   3 + 1,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 5; i++ {
@@ -325,7 +325,7 @@ func TestWorkerRestart(t *testing.T) {
 		worker3.Start()
 	}()
 	go func() {
-		sc, err := NewScheduler(schedConfig, node)
+		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -387,7 +387,7 @@ func TestLoadBalancer(t *testing.T) {
 		TTL:    60,
 		MaxNum: workerNum + 1,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Second * 10,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for _, group := range []string{"A", "B", "C"} {
@@ -404,7 +404,7 @@ func TestLoadBalancer(t *testing.T) {
 			return
 		},
 	}
-	s, err := NewScheduler(schedConfig, node)
+	s, err := NewMaster(schedConfig, node)
 	if err != nil {
 		t.Fatal(err)
 	}

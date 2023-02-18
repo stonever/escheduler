@@ -131,7 +131,7 @@ func TestWorkerStatus(t *testing.T) {
 		TTL:      15,
 		MaxNum:   3 + 1,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 3; i++ {
@@ -170,7 +170,7 @@ func TestWorkerStatus(t *testing.T) {
 	})
 
 	wg.Go(func() {
-		sc, err := NewScheduler(schedConfig, node)
+		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -339,7 +339,7 @@ func TestWorkerGetAllTask(t *testing.T) {
 		TTL:      15,
 		MaxNum:   2 + 1,
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 3; i++ {
@@ -372,7 +372,7 @@ func TestWorkerGetAllTask(t *testing.T) {
 	}()
 
 	go func() {
-		sc, err := NewScheduler(schedConfig, node)
+		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -416,7 +416,7 @@ func TestWorkerRegister(t *testing.T) {
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	schedConfig := SchedulerConfig{
+	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
 			for i := 0; i < 3; i++ {
@@ -430,10 +430,14 @@ func TestWorkerRegister(t *testing.T) {
 		},
 	}
 
-	sc, err := NewScheduler(schedConfig, node)
+	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 	go sc.Start()
 	worker1.Start()
+}
+func TestPanic(t *testing.T) {
+
+	panic("aaa")
 }
