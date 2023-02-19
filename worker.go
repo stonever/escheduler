@@ -167,8 +167,10 @@ func (w *workerInstance) Start() {
 		ctx = w.ctx
 		wg  conc.WaitGroup
 	)
-	defer wg.Wait()
-	defer w.SetStatus(WorkerStatusDead)
+	defer func() {
+		wg.Wait()
+		w.SetStatus(WorkerStatusDead)
+	}()
 
 	wg.Go(func() {
 		w.keepOnline()
@@ -187,7 +189,7 @@ func (w *workerInstance) Start() {
 		}
 	}()
 	var status int32
-	for status = 0; status != WorkerStatusInBarrier; status = w.Status() {
+	for status = 0; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
 		time.Sleep(time.Millisecond * 500)
 	}
 	log.Info("all workers have been in double Barrier, begin to watch my own task path", zap.String("worker", w.Name))
