@@ -134,13 +134,9 @@ func (w *workerInstance) keepOnline() {
 
 		}
 		err := w.register()
-		if err != nil {
-			log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
-			time.Sleep(time.Second * 3)
-		}
-
+		log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
+		time.Sleep(time.Second)
 	}
-
 }
 
 func (w *workerInstance) TryLeaveBarrier() error {
@@ -164,8 +160,7 @@ func (w *workerInstance) SetStatus(status int32) {
 }
 func (w *workerInstance) Start() {
 	var (
-		ctx = w.ctx
-		wg  conc.WaitGroup
+		wg conc.WaitGroup
 	)
 	defer func() {
 		wg.Wait()
@@ -175,22 +170,25 @@ func (w *workerInstance) Start() {
 	wg.Go(func() {
 		w.keepOnline()
 	})
-	go func() {
-		key := GetWorkerBarrierLeftKey(w.RootName)
-		if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-			log.Info("no need to gotoBarrier", zap.String("worker", w.Name), zap.String("barrier status", resp.Kvs[0].String()))
-			w.SetStatus(WorkerStatusInBarrier)
-			w.SetStatus(WorkerStatusLeftBarrier)
-			return
+	wg.Go(func() {
+		for {
+			select {
+			case <-w.ctx.Done():
+				return
+			default:
+
+			}
+			time.Sleep(time.Second)
+			if w.Status() != WorkerStatusRegister {
+				continue
+			}
+			log.Info("try to barrier", zap.String("worker", w.Name), zap.Int32("status", w.Status()))
+			w.tryToBarrier()
 		}
-		err := w.gotoBarrier(ctx)
-		if err != nil {
-			log.Error("failed to gotoBarrier", zap.Error(err))
-		}
-	}()
+	})
 	var status int32
 	for status = 0; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
-		time.Sleep(time.Millisecond * 500)
+		time.Sleep(time.Second)
 	}
 	log.Info("all workers have been in double Barrier, begin to watch my own task path", zap.String("worker", w.Name))
 	wg.Go(func() {
@@ -200,6 +198,19 @@ func (w *workerInstance) Start() {
 		}
 	})
 	return
+}
+func (w *workerInstance) tryToBarrier() {
+	key := GetWorkerBarrierLeftKey(w.RootName)
+	ctx := w.ctx
+	if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
+		log.Info("no need to gotoBarrier", zap.String("worker", w.Name), zap.String("barrier status", resp.Kvs[0].String()))
+		w.SetStatus(WorkerStatusLeftBarrier)
+		return
+	}
+	err := w.gotoBarrier(ctx)
+	if err != nil {
+		log.Error("failed to gotoBarrier", zap.Error(err))
+	}
 }
 func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	num := w.MaxNum
@@ -382,7 +393,7 @@ func (w *workerInstance) register() error {
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
 	log.Info("succeeded to register worker", zap.String("worker key", workerKey), zap.Int64("ttl", w.TTL))
 	w.SetStatus(WorkerStatusRegister)
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(time.Minute * 5)
 	defer ticker.Stop()
 	for {
 		select {
