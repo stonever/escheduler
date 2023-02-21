@@ -140,6 +140,10 @@ func (w *workerInstance) keepOnline() {
 }
 
 func (w *workerInstance) TryLeaveBarrier() error {
+	if w.Status() == WorkerStatusLeftBarrier {
+		log.Info("work status is WorkerStatusLeftBarrier", zap.String("worker name", w.Name))
+		return nil
+	}
 	if w.Status() == WorkerStatusInBarrier {
 		select {
 		case w.leavingBarrier <- struct{}{}:
