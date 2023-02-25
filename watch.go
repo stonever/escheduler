@@ -8,6 +8,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
+	"time"
 )
 
 type Watcher struct {
@@ -80,8 +81,8 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 					w.Blocking = false
 				}
 			}
+			time.Sleep(time.Second)
 			log.Info("watcher need to restart", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
-
 		}
 	}()
 

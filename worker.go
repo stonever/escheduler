@@ -135,7 +135,7 @@ func (w *workerInstance) keepOnline() {
 		}
 		err := w.register()
 		log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * 50)
 	}
 }
 
@@ -397,7 +397,7 @@ func (w *workerInstance) register() error {
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
 	log.Info("succeeded to register worker", zap.String("worker key", workerKey), zap.Int64("ttl", w.TTL))
 	w.SetStatus(WorkerStatusRegister)
-	ticker := time.NewTicker(time.Minute * 5)
+	ticker := time.NewTicker(time.Minute * 10)
 	defer ticker.Stop()
 	for {
 		select {
