@@ -74,19 +74,22 @@ func NewMaster(config MasterConfig, node Node) (Master, error) {
 		return nil, errors.Wrapf(err, "failed to validate node")
 	}
 
-	scheduler := master{
+	master := master{
 		Node:            node,
 		config:          config,
 		workerPath:      path.Join("/", node.RootName, workerFolder) + "/",
 		scheduleReqChan: make(chan string, 1),
 	}
-	scheduler.ctx, scheduler.cancel = context.WithCancel(context.Background())
+	master.assigner.rootName = master.RootName
+	master.ctx, master.cancel = context.WithCancel(context.Background())
+	// pass worker's ctx to client
+	node.EtcdConfig.Context = master.ctx
 	// 建立连接
-	scheduler.client, err = clientv3.New(node.EtcdConfig)
+	master.client, err = clientv3.New(node.EtcdConfig)
 	if err != nil {
 		return nil, err
 	}
-	return &scheduler, nil
+	return &master, nil
 }
 
 type Master interface {
@@ -101,15 +104,13 @@ func (s *master) ElectionKey() string {
 
 // Start The endless loop is for trying to election.
 // lifecycle 1. if outer ctx done, scheduler done
-// 2. if closed by outer or inner ,scheduler done
-// if session down, will be closed by inner
-func (s *master) Start() {
+// 2. if leader changed to the other, leader ctx done
+func (m *master) Start() {
 	var (
-		ctx = s.ctx
-		d   = time.Minute
+		d = time.Second
 	)
 	for {
-		err := s.Campaign(ctx)
+		err := m.Campaign(m.ctx)
 		if err == context.Canceled {
 			return
 		}
@@ -119,28 +120,35 @@ func (s *master) Start() {
 		time.Sleep(d)
 	}
 }
-func (s *master) Stop() {
-	s.cancel()
-	s.client.Close()
+func (m *master) Stop() {
+	m.cancel()
 }
-func (s *master) Campaign(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+
+// Campaign
+//
+//	@Description: 竞选期间有子context，其控制的生命周期包括
+//	1. 成为leader 2. 监听workers的变动，通知chan进行调度 3.定时调度  3. 打印
+//	@receiver s
+//	@param ctx
+//	@return error
+func (m *master) Campaign(ctx context.Context) (err error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(err) // err 可能是nil也可能被赋值了
 
 	// session的lease租约有效期设为30s，节点异常，最长等待15s，集群会产生新的leader执行调度
-	session, err := concurrency.NewSession(s.client, concurrency.WithTTL(int(s.TTL)))
+	session, err := concurrency.NewSession(m.client, concurrency.WithTTL(int(m.TTL)))
 	if err != nil {
 		log.Error("failed to new session,err:%s", zap.Error(err))
 		return err
 	}
 	defer session.Close()
 
-	electionKey := s.ElectionKey()
+	electionKey := m.ElectionKey()
 	election := concurrency.NewElection(session, electionKey)
-	c := election.Observe(ctx)
+	leaderChange := election.Observe(ctx)
 
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
-	err = election.Campaign(ctx, s.Name)
+	err = election.Campaign(ctx, m.Name)
 	if err != nil {
 		log.Error("failed to campaign, err:%s", zap.Error(err))
 		return err
@@ -157,52 +165,43 @@ func (s *master) Campaign(ctx context.Context) error {
 	if len(resp.Kvs) > 0 {
 		leader = string(resp.Kvs[0].Value)
 	}
-	log.Info("got leader", zap.Any("leader", leader))
-	var errC = make(chan error, 2)
+	log.Info("become leader", zap.Any("leader", leader))
+	// 成为leader后要履行leader的指责，决定发出调度请求以及进行调度
 	go func() {
-		s.handleScheduleRequest(ctx)
-		errC <- errors.New("handleScheduleRequest exit unexpected")
+		err := m.handleScheduleRequest(ctx)
+		cancel(err)
 	}()
 	go func() {
-		s.watch(ctx)
-		errC <- errors.New("watch exit unexpected")
+		err := m.watchSchedule(ctx)
+		cancel(err)
 	}()
 
 	for {
-		var (
-			ok bool
-		)
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-errC:
+			err := context.Cause(ctx)
+			log.Error("Campaign exit, ctx done", zap.Error(err))
 			return err
-		case _, ok = <-c:
+		case resp, ok := <-leaderChange:
+			// 如果not ok表示leaderChange这个channel关闭，那么即使leader变了也不知道，所以退出重试
 			if !ok {
+				return errors.New("chan leaderChange is closed")
+			}
+			if len(resp.Kvs) == 0 {
 				break
 			}
-			resp, err = election.Leader(ctx)
-			if err != nil {
-				log.Error("failed to get leader", zap.Error(err))
+
+			newLeader := string(resp.Kvs[0].Value)
+			log.Info("watch leader change", zap.String("leader:", newLeader))
+			if newLeader != m.Name {
+				// It is no longer a leader
+				err = errors.Errorf("leader has changed to %s, not %s", newLeader, m.Name)
 				return err
 			}
-			if len(resp.Kvs) > 0 {
-				newLeader := string(resp.Kvs[0].Value)
-				log.Info("query new leader", zap.String("leader", newLeader), zap.String("me", s.Name))
-				if newLeader != s.Name {
-					err = errors.New("leader has changed, is not me")
-					return err
-				}
-			}
+
 			continue
 		}
-		if !ok {
-			break
-		}
 	}
-	// It is no longer a leader
-
-	return errors.New("leader is over")
 }
 
 type Generator func(ctx context.Context) ([]Task, error)
@@ -212,14 +211,14 @@ func (s *master) taskPath() string {
 	return path.Join("/"+s.RootName, taskFolder)
 }
 
-func (s *master) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
-	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
+func (m *master) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
+	resp, err := m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		return
 	}
 	workers := make([]string, 0, len(resp.Kvs))
 	for _, kvPair := range resp.Kvs {
-		worker, err := ParseWorkerFromWorkerKey(string(kvPair.Key))
+		worker, err := ParseWorkerIDFromWorkerKey(m.RootName, string(kvPair.Key))
 		if err != nil {
 			log.Error("ParseWorkerFromWorkerKey error", zap.ByteString("key", kvPair.Key), zap.Error(err))
 			continue
@@ -250,30 +249,28 @@ func (s *master) workerList(ctx context.Context) (workersWithJob map[string][]Ra
 	return workersWithJob, nil
 }
 
-func (s *master) handleScheduleRequest(ctx context.Context) {
+func (m *master) handleScheduleRequest(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Error("handleScheduleRequest exit, ctx done")
-			return
-		case reason := <-s.scheduleReqChan:
+			err := context.Cause(ctx)
+			log.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
+			return err
+		case reason := <-m.scheduleReqChan:
 			if reason != ReasonFirstSchedule {
-				log.Info("doSchedule wait", zap.Duration("wait", s.config.ReBalanceWait))
-				time.Sleep(s.config.ReBalanceWait)
+				log.Info("doSchedule wait", zap.Duration("wait", m.config.ReBalanceWait))
+				time.Sleep(m.config.ReBalanceWait)
 			}
 			ctx := ctx
-			if s.config.Timeout > 0 {
-				ctx, _ = context.WithTimeout(ctx, s.config.Timeout)
+			if m.config.Timeout > 0 {
+				ctx, _ = context.WithTimeout(ctx, m.config.Timeout)
 			}
-			err := s.doSchedule(ctx)
+			err := m.doSchedule(ctx)
 			if err != nil {
-				log.Error("doSchedule error,continue", zap.Error(err))
+				log.Error("schedule error,continue", zap.Error(err))
 				continue
 			}
-			if reason == ReasonFirstSchedule {
-				//err = s.scheduleBarrier.Release()
-				log.Info("FirstSchedule done")
-			}
+			log.Info("schedule done", zap.String("reason", reason))
 		}
 	}
 }
@@ -354,44 +351,45 @@ func (s *master) doSchedule(ctx context.Context) error {
 	return nil
 }
 
-// watch :1. watch worker changed and notify
-// 2. periodic  notify
-func (s *master) watch(ctx context.Context) {
-	key := GetWorkerBarrierLeftKey(s.RootName)
-	if resp, _ := s.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-		log.Info("no need to gotoBarrier", zap.String("worker", s.Name), zap.String("barrier status left", resp.Kvs[0].String()))
+// watch :1. watch worker changed and notify schedule
+// 2. periodically  notify schedule
+func (m *master) watchSchedule(ctx context.Context) error {
+	key := GetWorkerBarrierLeftKey(m.RootName)
+	if resp, _ := m.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
+		log.Info("no need to gotoBarrier", zap.String("worker", m.Name), zap.String("barrier status left", resp.Kvs[0].String()))
 	} else {
-		err := s.gotoBarrier(ctx)
+		err := m.gotoBarrier(ctx)
 		if err != nil {
 			log.Error("failed to gotoBarrier", zap.Error(err))
 		}
 	}
 
-	s.NotifySchedule(ReasonFirstSchedule)
-	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
+	m.NotifySchedule(ReasonFirstSchedule)
+	resp, err := m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		log.Error("get worker job list failed.", zap.Error(err))
-		return
+		return err
 	}
-	ticker := time.NewTicker(s.config.Interval)
-	defer ticker.Stop()
+	period := time.NewTicker(m.config.Interval)
+	defer period.Stop()
 	watchStartRevision := resp.Header.Revision + 1
-	watchChan := s.client.Watcher.Watch(ctx, s.workerPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
+	watchChan := m.client.Watch(ctx, m.workerPath, clientv3.WithPrefix(), clientv3.WithRev(watchStartRevision))
 	for {
 		select {
 		case <-ctx.Done():
-			log.Error("watch exit, ctx done")
-			return
-		case <-ticker.C:
-			s.NotifySchedule("periodic task scheduling ")
+			err := context.Cause(ctx)
+			log.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
+			return err
+		case <-period.C:
+			m.NotifySchedule("periodic task scheduling ")
 		case watchResp := <-watchChan:
 			for _, watchEvent := range watchResp.Events {
 				if watchEvent.IsCreate() {
-					s.NotifySchedule(fmt.Sprintf("create worker:%s ", watchEvent.Kv.Key))
+					m.NotifySchedule(fmt.Sprintf("create worker:%s ", watchEvent.Kv.Key))
 					continue
 				}
 				if watchEvent.Type == mvccpb.DELETE {
-					s.NotifySchedule(fmt.Sprintf("delete worker:%s ", watchEvent.Kv.Key))
+					m.NotifySchedule(fmt.Sprintf("delete worker:%s ", watchEvent.Kv.Key))
 					continue
 				}
 			}
@@ -399,25 +397,25 @@ func (s *master) watch(ctx context.Context) {
 	}
 }
 
-func (s *master) gotoBarrier(ctx context.Context) error {
-	key := GetWorkerBarrierName(s.RootName)
-	session, err := concurrency.NewSession(s.client)
+func (m *master) gotoBarrier(ctx context.Context) error {
+	key := GetWorkerBarrierName(m.RootName)
+	session, err := concurrency.NewSession(m.client)
 	if err != nil {
 		log.Error("failed to new session", zap.Error(err))
 		return err
 	}
-	b := recipe.NewDoubleBarrier(session, key, s.MaxNum)
-	log.Info("scheduler waiting double Barrier", zap.String("scheduler", s.Name), zap.Int("num", s.MaxNum))
+	b := recipe.NewDoubleBarrier(session, key, m.MaxNum)
+	log.Info("scheduler waiting double Barrier", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum))
 	err = b.Enter()
 	if err != nil {
-		log.Error("scheduler enter double Barrier error", zap.String("scheduler", s.Name), zap.Int("num", s.MaxNum), zap.Error(err))
+		log.Error("scheduler enter double Barrier error", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum), zap.Error(err))
 		return err
 	}
-	log.Info("scheduler enter double Barrier", zap.String("scheduler", s.Name), zap.Error(err))
+	log.Info("scheduler enter double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
 	_ = session.Close()
-	log.Info("scheduler left double Barrier", zap.String("scheduler", s.Name), zap.Error(err))
-	statusKey := GetWorkerBarrierLeftKey(s.RootName)
-	txnResp, err := s.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, time.Now().Format(time.RFC3339))).Commit()
+	log.Info("scheduler left double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
+	statusKey := GetWorkerBarrierLeftKey(m.RootName)
+	txnResp, err := m.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, time.Now().Format(time.RFC3339))).Commit()
 	if err != nil {
 		log.Error("failed to set barrier left", zap.Error(err))
 		return err

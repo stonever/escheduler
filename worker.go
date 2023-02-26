@@ -97,7 +97,7 @@ func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error)
 		return nil, errors.Wrapf(err, "failed to get etcd kv")
 	}
 	for _, value := range resp.Kvs {
-		abbr, err := ParseTaskAbbrFromTaskKey(string(value.Key))
+		abbr, err := ParseTaskIDFromTaskKey(w.RootName, string(value.Key))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse abbr:%s", value.Key)
 		}
@@ -287,7 +287,7 @@ func (w *workerInstance) watch() error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			log.Info("check watcher live", zap.Bool("blocking", watcher.Blocking))
+			log.Info("check watcher live", zap.Bool("blocking", watcher.blocking))
 		case event, ok := <-watcher.EventChan:
 			if !ok {
 				return errors.Errorf("watcher stopped")
@@ -305,7 +305,7 @@ func (w *workerInstance) watch() error {
 			case mvccpb.DELETE:
 				// 任务delete event
 				// id = kvPair.Key
-				taskID, err := ParseTaskAbbrFromTaskKey(string(event.Kv.Key))
+				taskID, err := ParseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
 				if err != nil {
 					log.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue

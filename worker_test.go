@@ -19,7 +19,7 @@ import (
 func TestBarrier_AllLeftNewEnter(t *testing.T) {
 	node := Node{
 		EtcdConfig: clientv3.Config{
-			Endpoints:   []string{"127.0.0.1:2379"},
+			Endpoints:   []string{"127.0.0.1:23790"},
 			Username:    "root",
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
@@ -122,7 +122,7 @@ func TestWorkerStatus(t *testing.T) {
 
 	node := Node{
 		EtcdConfig: clientv3.Config{
-			Endpoints:   []string{"127.0.0.1:49720"},
+			Endpoints:   []string{"127.0.0.1:23790"},
 			Username:    "root",
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
@@ -436,8 +436,4 @@ func TestWorkerRegister(t *testing.T) {
 	}
 	go sc.Start()
 	worker1.Start()
-}
-func TestPanic(t *testing.T) {
-
-	panic("aaa")
 }

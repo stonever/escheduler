@@ -11,6 +11,7 @@ import (
 
 type Assigner struct {
 	sync.Mutex
+	rootName     string
 	workerList   []string
 	hashBalancer balancer.Balancer
 	leastLoadMap map[string]balancer.Balancer // each group is given a least-load balancer.
@@ -98,7 +99,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 
 	for _, kvPair := range taskPathResp {
 
-		workerKey := ParseWorkerFromTaskKey(string(kvPair.Key))
+		workerKey, _ := ParseWorkerIDFromTaskKey(a.rootName, string(kvPair.Key))
 		_, ok := workerMap[workerKey]
 		if !ok {
 			parentPath := path.Dir(string(kvPair.Key))
@@ -106,7 +107,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			continue
 		}
 		var task string
-		task, err = ParseTaskAbbrFromTaskKey(string(kvPair.Key))
+		task, err = ParseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
 		if err != nil {
 			log.Info("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))

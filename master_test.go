@@ -3,6 +3,7 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"strconv"
 	"sync"
 	"testing"
@@ -45,37 +46,40 @@ func TestStopScheduler(t *testing.T) {
 	sc.Start()
 
 }
-func TestMultiScheuler(t *testing.T) {
+func TestMultiMaster(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for i := 0; i < 1; i++ {
 		wg.Add(1)
 		go func() {
-			newMaster()
+			newMaster("root", "worker1", 1)
 			wg.Done()
 		}()
 	}
 	wg.Wait()
 }
-func newMaster() {
-
+func newMaster(rootName string, name string, num int) (worker Worker, master Master) {
+	maxNum := num + 1
 	node := Node{
 		EtcdConfig: clientv3.Config{
-			Endpoints:   []string{"127.0.0.1:2379"},
+			Endpoints:   []string{"127.0.0.1:23790"},
 			Username:    "root",
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220624",
+		RootName: rootName,
 		TTL:      15,
-		MaxNum:   2,
+		MaxNum:   maxNum,
+		Name:     name,
 	}
 	schedConfig := MasterConfig{
-		Interval:  time.Second * 60,
-		Generator: tg,
+		Interval:      time.Second * 60,
+		ReBalanceWait: 5 * time.Second,
+		Generator:     tg,
 	}
 	go func() {
-		worker, err := NewWorker(node)
+		var err error
+		worker, err = NewWorker(node)
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -85,12 +89,16 @@ func newMaster() {
 			log.Info("receive", zap.Any("v", v))
 		}
 	}()
-	sc, err := NewMaster(schedConfig, node)
+	var err error
+	master, err = NewMaster(schedConfig, node)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
-	sc.Start()
+	go func() {
+		master.Start()
+	}()
 
+	return worker, master
 }
 
 func tg(ctx context.Context) ([]Task, error) {
@@ -436,4 +444,82 @@ func TestLeastLoad(t *testing.T) {
 	leastLoadBalancer.Inc("worker-1")
 	res, err := leastLoadBalancer.Balance("")
 	t.Logf(res, err)
+}
+func TestMainFunction(t *testing.T) {
+	rootNme := time.Now().Format(time.RFC3339)
+	num := 5
+	for i := 0; i < num; i++ {
+		name := fmt.Sprintf("worker-%d", i)
+		go func() {
+			newMaster(rootNme, name, num)
+		}()
+	}
+	time.Sleep(time.Second)
+	etcdConfig := clientv3.Config{
+		Endpoints:   []string{"127.0.0.1:23790"},
+		Username:    "root",
+		Password:    "password",
+		DialTimeout: 5 * time.Second,
+	}
+	client, err := clientv3.New(etcdConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5 worker should be registered
+	getResp, err := client.Get(context.Background(), fmt.Sprintf("/%s/worker/", rootNme), clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.EqualValues(t, 5, getResp.Count)
+	time.Sleep(time.Second * 1)
+	// 20 tasks should be assigned
+	var taskMap = make(map[string]*clientv3.GetResponse)
+	for i := 0; i < num; i++ {
+		name := fmt.Sprintf("/%s/task/worker-%d", rootNme, i)
+		getResp, err := client.Get(context.Background(), name, clientv3.WithPrefix())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert.EqualValues(t, 4, getResp.Count)
+		taskMap[name] = getResp
+	}
+
+	// delete worker-0
+	worker0 := fmt.Sprintf("/%s/worker/%s", rootNme, "worker-0")
+	delResp, err := client.Delete(context.Background(), worker0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.EqualValues(t, 1, delResp.Deleted)
+	time.Sleep(time.Second * 1) // waiting register again
+	// worker-0 should be registered again
+	getResp, err = client.Get(context.Background(), worker0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.EqualValues(t, getResp.Count, 1)
+
+	// task should not be changed
+	var taskMap2 = make(map[string]*clientv3.GetResponse)
+	for i := 0; i < num; i++ {
+		name := fmt.Sprintf("/%s/task/worker-%d", rootNme, i)
+		getResp, err := client.Get(context.Background(), name, clientv3.WithPrefix())
+		if err != nil {
+			t.Fatal(err)
+		}
+		assert.EqualValues(t, 4, getResp.Count)
+		taskMap2[name] = getResp
+	}
+	for k, v := range taskMap {
+		assert.EqualValues(t, v.Count, taskMap2[k].Count)
+		assert.EqualValues(t, len(v.Kvs), len(taskMap2[k].Kvs))
+	}
+	for k, v := range taskMap {
+		v2 := taskMap2[k]
+		for index, kv := range v.Kvs {
+			assert.EqualValues(t, kv.Key, v2.Kvs[index].Key)
+			assert.EqualValues(t, kv.Value, v2.Kvs[index].Value)
+		}
+	}
+
 }

@@ -18,7 +18,7 @@ type Watcher struct {
 
 	incipientRevision int64              // initial revision
 	IncipientKVs      []*mvccpb.KeyValue // initial kv with prefix
-	Blocking          bool               // check if event channel blocking
+	blocking          bool               // check if event channel blocking
 }
 
 // NewWatcher
@@ -72,13 +72,10 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 					log.Error("watcher response error", zap.String("response", spew.Sdump(n)))
 					break
 				}
-				if n.Canceled {
-					log.Error("watcher canceled", zap.String("response", spew.Sdump(n)))
-				}
 				for _, ev := range n.Events {
-					w.Blocking = true
+					w.blocking = true
 					eventChan <- ev // may be  blocked
-					w.Blocking = false
+					w.blocking = false
 				}
 			}
 			time.Sleep(time.Second)
