@@ -355,7 +355,12 @@ func (s *master) doSchedule(ctx context.Context) error {
 // 2. periodically  notify schedule
 func (m *master) watchSchedule(ctx context.Context) error {
 	key := GetWorkerBarrierLeftKey(m.RootName)
-	if resp, _ := m.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
+	resp, err := m.client.KV.Get(ctx, key)
+	if err != nil {
+		log.Error("get barrier kv failed.", zap.Error(err))
+		return err
+	}
+	if len(resp.Kvs) > 0 {
 		log.Info("no need to gotoBarrier", zap.String("worker", m.Name), zap.String("barrier status left", resp.Kvs[0].String()))
 	} else {
 		err := m.gotoBarrier(ctx)
@@ -365,7 +370,7 @@ func (m *master) watchSchedule(ctx context.Context) error {
 	}
 
 	m.NotifySchedule(ReasonFirstSchedule)
-	resp, err := m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
+	resp, err = m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		log.Error("get worker job list failed.", zap.Error(err))
 		return err
