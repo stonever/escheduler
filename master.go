@@ -150,7 +150,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
 	err = election.Campaign(ctx, m.Name)
 	if err != nil {
-		log.Error("failed to campaign, err:%s", zap.Error(err))
+		log.Error("failed to campaign", zap.Error(err))
 		return err
 	}
 	resp, err := election.Leader(ctx)

@@ -135,7 +135,7 @@ func (w *workerInstance) keepOnline() {
 		}
 		err := w.register()
 		log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
-		time.Sleep(time.Millisecond * 50)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -347,6 +347,8 @@ func NewWorker(node Node) (Worker, error) {
 // register let multi workers are registered serializable
 // if lock failed, will block rather than return err
 // if reach maximum, return err
+// condition of the func returned is 1. worker key has been deleted
+// 2. keepRespChan is closed
 func (w *workerInstance) register() error {
 	var (
 		ctx        = w.ctx
@@ -404,15 +406,23 @@ func (w *workerInstance) register() error {
 		case <-ticker.C:
 			log.Info("worker is alive", zap.String("worker key", workerKey))
 		case _, ok := <-keepRespChan:
+			// closed keepRespChan  can be a fatal error,other error should only be logged
 			if !ok {
 				return errors.New("keepRespChan is closed,the worker has been lost")
 			}
 		case resp, ok := <-watchChan:
 			if !ok {
-				return errors.New("watchChan is closed, the worker has been lost")
+				log.Warn("watchChan is closed,the worker may be lost", zap.Error(resp.Err()))
+				// If the requested revision is 0 or unspecified, the returned channel will
+				// return watch events that happen after the server receives the watch request.
+				watchChan = w.client.Watch(ctx, workerKey)
+				continue
 			}
 			if resp.Canceled {
-				return errors.Errorf("watchChan is canceled with err:%s,the worker has been lost", resp.Err())
+				// for example,if etcd node restart, resp will raise error, mvcc: requested revision has been compacted
+				log.Warn("watchChan is canceled with error,the worker may be lost", zap.Error(resp.Err()))
+				watchChan = w.client.Watch(ctx, workerKey)
+				continue
 			}
 			for _, watchEvent := range resp.Events {
 				if watchEvent.IsCreate() {
