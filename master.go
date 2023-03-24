@@ -8,6 +8,8 @@ import (
 	"path"
 	"time"
 
+	"github.com/oleiade/lane/v2"
+
 	"github.com/pkg/errors"
 	"github.com/stonever/balancer/balancer"
 	"github.com/stonever/escheduler/log"
@@ -330,23 +332,38 @@ func (s *master) doSchedule(ctx context.Context) error {
 			}
 		}
 	}
-
-	var assignCount = 0
+	total := 0
+	priorityQueue := lane.NewMaxPriorityQueue[WorkerTask, float64]()
 	for worker, arr := range assignMap {
 		for _, taskObj := range arr {
-			taskKey := path.Join(s.taskPath(), worker, taskObj.ID)
-			data, err := json.Marshal(taskObj)
-			if err != nil {
-				return err
-			}
-			_, err = s.client.KV.Put(ctx, taskKey, string(data))
-			if err != nil {
-				return err
-			}
-			assignCount++
+			priorityQueue.Push(WorkerTask{Task: taskObj, worker: worker}, taskObj.P)
+			total++
 		}
-
 	}
+	log.Info("assignMap total count", zap.Int("total", total), zap.Uint("queue size", priorityQueue.Size()))
+	var assignCount = 0
+
+	for i := 0; i < total; i++ {
+		taskWorker, _, ok := priorityQueue.Pop()
+		if !ok {
+			log.Error("unexpected error while dequeue")
+			break
+		}
+		taskObj := taskWorker.Task
+		taskKey := path.Join(s.taskPath(), taskWorker.worker, taskObj.ID)
+		data, err := json.Marshal(taskObj)
+		if err != nil {
+			return err
+		}
+		_, err = s.client.KV.Put(ctx, taskKey, string(data))
+		if err != nil {
+			return err
+		}
+		log.Info("put the task to worker", zap.String("taskKey", taskKey), zap.Float64("priority", taskObj.P), zap.String("worker", taskWorker.worker))
+
+		assignCount++
+	}
+	log.Info("dequeue ended up", zap.Uint("queue size", priorityQueue.Size()))
 	log.Info("task re-balance result", zap.Int("created count", assignCount), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
 	return nil
 }

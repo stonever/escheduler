@@ -3,11 +3,12 @@ package escheduler
 import (
 	"context"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/stonever/balancer/balancer"
 	"github.com/stonever/escheduler/log"
@@ -404,6 +405,7 @@ func TestLoadBalancer(t *testing.T) {
 						ID:    fmt.Sprintf("%s%d", group, i),
 						Raw:   []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
 						Group: group,
+						P:     float64(i),
 					}
 					ret = append(ret, task)
 				}
