@@ -360,10 +360,11 @@ func (s *master) doSchedule(ctx context.Context) error {
 			return err
 		}
 		log.Info("put the task to worker", zap.String("taskKey", taskKey), zap.Float64("priority", taskObj.P), zap.String("worker", taskWorker.worker))
-
 		assignCount++
 	}
-	log.Info("dequeue ended up", zap.Uint("queue size", priorityQueue.Size()))
+	if priorityQueue.Size() != 0 {
+		log.Error("priorityQueue should be empty", zap.Uint("actual", priorityQueue.Size()))
+	}
 	log.Info("task re-balance result", zap.Int("created count", assignCount), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
 	return nil
 }
