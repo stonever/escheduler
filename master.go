@@ -206,7 +206,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	}
 }
 
-type Generator func(ctx context.Context) ([]Task, error)
+type Generator func(ctx context.Context, workerNum int) ([]Task, error)
 
 // taskPath return for example: /20220624/task
 func (s *master) taskPath() string {
@@ -278,8 +278,16 @@ func (m *master) handleScheduleRequest(ctx context.Context) error {
 }
 
 func (s *master) doSchedule(ctx context.Context) error {
+	// query all online worker in etcd
+	workerList, err := s.onlineWorkerList(ctx)
+	if err != nil {
+		log.Error("failed to get leader, err:%s", zap.Error(err))
+		return err
+	}
+	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
+
 	// start to assign
-	taskList, err := s.config.Generator(ctx)
+	taskList, err := s.config.Generator(ctx, len(workerList))
 	if err != nil {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
@@ -289,13 +297,7 @@ func (s *master) doSchedule(ctx context.Context) error {
 	for _, task := range taskList {
 		taskMap[task.ID] = task
 	}
-	// query all online worker in etcd
-	workerList, err := s.onlineWorkerList(ctx)
-	if err != nil {
-		log.Error("failed to get leader, err:%s", zap.Error(err))
-		return err
-	}
-	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
+
 	if len(workerList) != s.MaxNum-1 {
 		log.Info("worker count not expected", zap.Int("expected", s.MaxNum-1))
 	}
