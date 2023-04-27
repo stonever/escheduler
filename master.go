@@ -206,7 +206,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	}
 }
 
-type Generator func(ctx context.Context, workerNum int) ([]Task, error)
+type Generator func(ctx context.Context) ([]Task, error)
 
 // taskPath return for example: /20220624/task
 func (s *master) taskPath() string {
@@ -287,7 +287,7 @@ func (s *master) doSchedule(ctx context.Context) error {
 	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
 
 	// start to assign
-	taskList, err := s.config.Generator(ctx, len(workerList))
+	taskList, err := s.config.Generator(ctx)
 	if err != nil {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
