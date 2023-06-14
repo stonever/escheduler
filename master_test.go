@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/exp/slog"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stonever/balancer/balancer"
-	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
@@ -38,7 +39,7 @@ func TestStopScheduler(t *testing.T) {
 
 	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	go func() {
 		time.Sleep(time.Second * 30)
@@ -82,18 +83,18 @@ func newMaster(rootName string, name string, num int) (worker Worker, master Mas
 		var err error
 		worker, err = NewWorker(node)
 		if err != nil {
-			log.Fatal(err.Error())
+			slog.Info(err.Error())
 		}
 		worker.Start()
 
 		for v := range worker.WatchTask() {
-			log.Info("receive", zap.Any("v", v))
+			slog.Info("receive", zap.Any("v", v))
 		}
 	}()
 	var err error
 	master, err = NewMaster(schedConfig, node)
 	if err != nil {
-		log.Fatal(err.Error())
+		slog.Info(err.Error())
 	}
 	go func() {
 		master.Start()
@@ -145,12 +146,12 @@ func TestDoubleBarrie(t *testing.T) {
 			b := recipe.NewDoubleBarrier(s, key, 1)
 			err = b.Enter()
 			if err != nil {
-				log.Fatal(err.Error())
+				panic(err.Error())
 			}
-			log.Info("enter...")
+			slog.Info("enter...")
 			err = s.Close()
 			if err != nil {
-				log.Fatal(err.Error())
+				panic(err.Error())
 			}
 		}()
 	}
@@ -185,19 +186,19 @@ func TestWatchTaskDel(t *testing.T) {
 	}
 	worker, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	go func() {
 		worker.Start()
 	}()
 	go func() {
 		for v := range worker.WatchTask() {
-			log.Info("receive", zap.Any("v", v))
+			slog.Info("receive", v)
 		}
 	}()
 	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	sc.Start()
 
@@ -241,16 +242,16 @@ func TestHashBalancer(t *testing.T) {
 		node.Name = "aaa"
 		worker, err := NewWorker(node)
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err.Error())
 		}
 		go worker.Start()
 
 		for v := range worker.WatchTask() {
-			log.Info("receive", zap.Any("v", v))
+			slog.Info("receive", zap.Any("v", v))
 		}
 		err = worker.TryLeaveBarrier()
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err.Error())
 		}
 	}()
 	go func() {
@@ -259,17 +260,17 @@ func TestHashBalancer(t *testing.T) {
 
 		worker, err := NewWorker(node)
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err.Error())
 		}
 		worker.Start()
 
 		for v := range worker.WatchTask() {
-			log.Info("receive", zap.Any("v", v))
+			slog.Info("receive", zap.Any("v", v))
 		}
 	}()
 	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	sc.Start()
 
@@ -309,18 +310,18 @@ func TestWorkerRestart(t *testing.T) {
 	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	node.Name = "worker2"
 
 	worker2, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 	node.Name = "worker3"
 	worker3, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err.Error())
 	}
 
 	go func() {
@@ -336,10 +337,10 @@ func TestWorkerRestart(t *testing.T) {
 	go func() {
 		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err.Error())
 		}
 		sc.Start()
-		log.Fatal("exit")
+		panic("exit")
 
 	}()
 	eventC1 := worker1.WatchTask()
@@ -420,14 +421,14 @@ func TestLoadBalancer(t *testing.T) {
 	}
 	go func() {
 		s.Start()
-		log.Fatal("exit")
+		panic("exit")
 
 	}()
 	for workerN := 0; workerN < workerNum; workerN++ {
 		node.Name = fmt.Sprintf("worker-%d", workerN)
 		worker1, err := NewWorker(node)
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err.Error())
 		}
 		go func() {
 			//time.AfterFunc(time.Minute*2, func() {

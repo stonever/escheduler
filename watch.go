@@ -2,13 +2,15 @@ package escheduler
 
 import (
 	"context"
+	"time"
+
+	"golang.org/x/exp/slog"
+
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
-	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
-	"time"
 )
 
 type Watcher struct {
@@ -46,30 +48,30 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 		for {
 			select {
 			case <-ctx.Done():
-				log.Info("ctx done. stop watcher", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+				slog.Info("ctx done. stop watcher", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 				close(eventChan)
 				return
 			default:
 
 			}
 			rch := client.Watch(ctx, pathPrefix, clientv3.WithPrefix(), clientv3.WithCreatedNotify(), clientv3.WithRev(w.revision))
-			log.Info("start watcher...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+			slog.Info("start watcher...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 			//if ctx done, rch will be closed, for loop will end
 			for n := range rch {
 				if n.Created {
-					log.Info("watcher created")
+					slog.Info("watcher created")
 				}
 				// 一般情况下，协程的逻辑会阻塞在此
 				if n.CompactRevision > w.revision {
 					w.revision = n.CompactRevision
-					log.Info("set revision to CompactRevision", zap.Int64("new revision", w.revision))
+					slog.Info("set revision to CompactRevision", zap.Int64("new revision", w.revision))
 				}
 				// 是否需要更新当前的最新的 revision
 				if n.Header.GetRevision() > w.revision {
 					w.revision = n.Header.GetRevision()
 				}
 				if err := n.Err(); err != nil {
-					log.Error("watcher response error", zap.String("response", spew.Sdump(n)))
+					slog.Error("watcher response error", zap.String("response", spew.Sdump(n)))
 					break
 				}
 				for _, ev := range n.Events {
@@ -79,7 +81,7 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 				}
 			}
 			time.Sleep(time.Second)
-			log.Info("watcher need to restart", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+			slog.Info("watcher need to restart", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
 		}
 	}()
 

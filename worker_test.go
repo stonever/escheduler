@@ -3,14 +3,15 @@ package escheduler
 import (
 	"context"
 	"fmt"
-	"github.com/sourcegraph/conc"
-	"github.com/stretchr/testify/assert"
+	"log"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/sourcegraph/conc"
+	"github.com/stretchr/testify/assert"
+
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
@@ -172,7 +173,7 @@ func TestWorkerStatus(t *testing.T) {
 	wg.Go(func() {
 		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 		}
 		sc.Start()
 	})
@@ -289,7 +290,7 @@ func TestWorkerTooMuch(t *testing.T) {
 func startWorker(ctx context.Context, node Node) Worker {
 	worker, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
 	}
 	go func() {
 		worker.Start()
@@ -355,13 +356,13 @@ func TestWorkerGetAllTask(t *testing.T) {
 	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
 	}
 	node.Name = "worker2"
 
 	worker2, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
 	}
 
 	go func() {
@@ -374,7 +375,7 @@ func TestWorkerGetAllTask(t *testing.T) {
 	go func() {
 		sc, err := NewMaster(schedConfig, node)
 		if err != nil {
-			log.Fatal(err.Error())
+			panic(err)
 		}
 		sc.Start()
 
@@ -414,7 +415,7 @@ func TestWorkerRegister(t *testing.T) {
 	node.Name = "worker1"
 	worker1, err := NewWorker(node)
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -432,7 +433,7 @@ func TestWorkerRegister(t *testing.T) {
 
 	sc, err := NewMaster(schedConfig, node)
 	if err != nil {
-		log.Fatal(err.Error())
+		t.Fatal(err.Error())
 	}
 	go sc.Start()
 	worker1.Start()

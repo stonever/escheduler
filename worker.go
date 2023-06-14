@@ -7,10 +7,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/exp/slog"
+
 	"github.com/sourcegraph/conc"
 
 	"github.com/pkg/errors"
-	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
@@ -134,14 +135,14 @@ func (w *workerInstance) keepOnline() {
 
 		}
 		err := w.register()
-		log.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
+		slog.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
 		time.Sleep(time.Second)
 	}
 }
 
 func (w *workerInstance) TryLeaveBarrier() error {
 	if w.Status() == WorkerStatusLeftBarrier {
-		log.Info("work status is WorkerStatusLeftBarrier", zap.String("worker name", w.Name))
+		slog.Info("work status is WorkerStatusLeftBarrier", zap.String("worker name", w.Name))
 		return nil
 	}
 	if w.Status() == WorkerStatusInBarrier {
@@ -160,7 +161,7 @@ func (w *workerInstance) IsAllRunning() bool {
 func (w *workerInstance) SetStatus(status int32) {
 
 	old := w.status.Swap(status)
-	log.Info("SetStatus", zap.Any("new", status), zap.Any("old", old))
+	slog.Info("SetStatus", status, old)
 }
 func (w *workerInstance) Start() {
 	var (
@@ -186,7 +187,7 @@ func (w *workerInstance) Start() {
 			if w.Status() != WorkerStatusRegister {
 				continue
 			}
-			log.Info("try to barrier", zap.String("worker", w.Name), zap.Int32("status", w.Status()))
+			slog.Info("try to barrier", zap.String("worker", w.Name), zap.Int32("status", w.Status()))
 			w.tryToBarrier()
 		}
 	})
@@ -194,11 +195,11 @@ func (w *workerInstance) Start() {
 	for status = 0; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
 		time.Sleep(time.Second)
 	}
-	log.Info("all workers have been in double Barrier, begin to watch my own task path", zap.String("worker", w.Name))
+	slog.Info("all workers have been in double Barrier, begin to watch my own task path", w.Name)
 	wg.Go(func() {
 		err := w.watch()
 		if err != nil {
-			log.Error("worker watch error", zap.Error(err))
+			slog.Error("worker watch error", err)
 		}
 	})
 	return
@@ -207,13 +208,13 @@ func (w *workerInstance) tryToBarrier() {
 	key := GetWorkerBarrierLeftKey(w.RootName)
 	ctx := w.ctx
 	if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-		log.Info("no need to gotoBarrier", zap.String("worker", w.Name), zap.String("barrier status", resp.Kvs[0].String()))
+		slog.Info("no need to gotoBarrier", w.Name, resp.Kvs[0].String())
 		w.SetStatus(WorkerStatusLeftBarrier)
 		return
 	}
 	err := w.gotoBarrier(ctx)
 	if err != nil {
-		log.Error("failed to gotoBarrier", zap.Error(err))
+		slog.Error("failed to gotoBarrier", zap.Error(err))
 	}
 }
 func (w *workerInstance) gotoBarrier(ctx context.Context) error {
@@ -226,7 +227,7 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	defer s.Close()
 
 	b := recipe.NewDoubleBarrier(s, barrier, num)
-	log.Info("worker waiting double Barrier", zap.String("worker", w.Name), zap.Int("num", num))
+	slog.Info("worker waiting double Barrier", zap.String("worker", w.Name), zap.Int("num", num))
 	err = b.Enter()
 	if err != nil {
 		return err
@@ -287,7 +288,7 @@ func (w *workerInstance) watch() error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			log.Info("check watcher live", zap.Bool("blocking", watcher.blocking))
+			slog.Info("check watcher live", zap.Bool("blocking", watcher.blocking))
 		case event, ok := <-watcher.EventChan:
 			if !ok {
 				return errors.Errorf("watcher stopped")
@@ -298,7 +299,7 @@ func (w *workerInstance) watch() error {
 				// id = kvPair.Key
 				task, err := ParseTaskFromValue(event.Kv.Value)
 				if err != nil {
-					log.Error("[watch] failed to parse created task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
+					slog.Error("[watch] failed to parse created task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
 				}
 				w.Add(task)
@@ -307,12 +308,12 @@ func (w *workerInstance) watch() error {
 				// id = kvPair.Key
 				taskID, err := ParseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
 				if err != nil {
-					log.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
+					slog.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
 				}
 				w.Del(taskID)
 			default:
-				log.Warn("[watch] unsupported event case:%s", zap.Any("event", event.Type))
+				slog.Warn("[watch] unsupported event case:%s", zap.Any("event", event.Type))
 			}
 
 		}
@@ -397,14 +398,14 @@ func (w *workerInstance) register() error {
 	}
 	watchStartRevision := putResp.Header.Revision + 1
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
-	log.Info("succeeded to register worker", zap.String("worker key", workerKey), zap.Int64("ttl", w.TTL))
+	slog.Info("succeeded to register worker", workerKey, w.TTL)
 	w.SetStatus(WorkerStatusRegister)
 	ticker := time.NewTicker(time.Minute * 10)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			log.Info("worker is alive", zap.String("worker key", workerKey))
+			slog.Info("worker is alive", zap.String("worker key", workerKey))
 		case _, ok := <-keepRespChan:
 			// closed keepRespChan  can be a fatal error,other error should only be logged
 			if !ok {
@@ -412,7 +413,7 @@ func (w *workerInstance) register() error {
 			}
 		case resp, ok := <-watchChan:
 			if !ok {
-				log.Warn("watchChan is closed,the worker may be lost", zap.Error(resp.Err()))
+				slog.Warn("watchChan is closed,the worker may be lost", resp.Err())
 				// If the requested revision is 0 or unspecified, the returned channel will
 				// return watch events that happen after the server receives the watch request.
 				watchChan = w.client.Watch(ctx, workerKey)
@@ -420,17 +421,17 @@ func (w *workerInstance) register() error {
 			}
 			if resp.Canceled {
 				// for example,if etcd node restart, resp will raise error, mvcc: requested revision has been compacted
-				log.Warn("watchChan is canceled with error,the worker may be lost", zap.Error(resp.Err()))
+				slog.Warn("watchChan is canceled with error,the worker may be lost", resp.Err())
 				watchChan = w.client.Watch(ctx, workerKey)
 				continue
 			}
 			for _, watchEvent := range resp.Events {
 				if watchEvent.IsCreate() {
-					log.Info("worker watch event: create")
+					slog.Info("worker watch event: create")
 					continue
 				}
 				if watchEvent.Type == mvccpb.DELETE {
-					log.Info("worker watch event: delete")
+					slog.Info("worker watch event: delete")
 					return errors.Errorf("worker key has been delete,the worker has been lost")
 				}
 			}

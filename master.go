@@ -8,11 +8,12 @@ import (
 	"path"
 	"time"
 
+	"golang.org/x/exp/slog"
+
 	"github.com/oleiade/lane/v2"
 
 	"github.com/pkg/errors"
 	"github.com/stonever/balancer/balancer"
-	"github.com/stonever/escheduler/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/clientv3util"
@@ -59,9 +60,9 @@ type master struct {
 func (s *master) NotifySchedule(request string) {
 	select {
 	case s.scheduleReqChan <- request:
-		log.Info("sent schedule request", zap.String("request", request))
+		slog.Debug("sent schedule request", zap.String("request", request))
 	default:
-		log.Error("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
+		slog.Error("scheduler is too busy to handle task change request, ignored", zap.String("request", request))
 	}
 }
 
@@ -117,7 +118,7 @@ func (m *master) Start() {
 			return
 		}
 		if err != nil {
-			log.Error("failed to elect once, try again...", zap.Error(err))
+			slog.Error("failed to elect once, try again...", zap.Error(err))
 		}
 		time.Sleep(d)
 	}
@@ -140,7 +141,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	// session的lease租约有效期设为30s，节点异常，最长等待15s，集群会产生新的leader执行调度
 	session, err := concurrency.NewSession(m.client, concurrency.WithTTL(int(m.TTL)))
 	if err != nil {
-		log.Error("failed to new session,err:%s", zap.Error(err))
+		slog.Error("failed to new session,err:%s", zap.Error(err))
 		return err
 	}
 	defer session.Close()
@@ -152,12 +153,12 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
 	err = election.Campaign(ctx, m.Name)
 	if err != nil {
-		log.Error("failed to campaign", zap.Error(err))
+		slog.Error("failed to campaign", zap.Error(err))
 		return err
 	}
 	resp, err := election.Leader(ctx)
 	if err != nil {
-		log.Error("failed to get leader", zap.Error(err))
+		slog.Error("failed to get leader", zap.Error(err))
 		return err
 	}
 	defer func() {
@@ -167,7 +168,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 	if len(resp.Kvs) > 0 {
 		leader = string(resp.Kvs[0].Value)
 	}
-	log.Info("become leader", zap.Any("leader", leader))
+	slog.Info("become leader", zap.Any("leader", leader))
 	// 成为leader后要履行leader的指责，决定发出调度请求以及进行调度
 	go func() {
 		err := m.handleScheduleRequest(ctx)
@@ -182,7 +183,6 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 		select {
 		case <-ctx.Done():
 			err := context.Cause(ctx)
-			log.Error("Campaign exit, ctx done", zap.Error(err))
 			return err
 		case resp, ok := <-leaderChange:
 			// 如果not ok表示leaderChange这个channel关闭，那么即使leader变了也不知道，所以退出重试
@@ -194,7 +194,7 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 			}
 
 			newLeader := string(resp.Kvs[0].Value)
-			log.Info("watch leader change", zap.String("leader:", newLeader))
+			slog.Info("watch leader change", zap.String("leader:", newLeader))
 			if newLeader != m.Name {
 				// It is no longer a leader
 				err = errors.Errorf("leader has changed to %s, not %s", newLeader, m.Name)
@@ -222,7 +222,7 @@ func (m *master) onlineWorkerList(ctx context.Context) (workersWithJob []string,
 	for _, kvPair := range resp.Kvs {
 		worker, err := ParseWorkerIDFromWorkerKey(m.RootName, string(kvPair.Key))
 		if err != nil {
-			log.Error("ParseWorkerFromWorkerKey error", zap.ByteString("key", kvPair.Key), zap.Error(err))
+			slog.Error("ParseWorkerFromWorkerKey error", zap.ByteString("key", kvPair.Key), zap.Error(err))
 			continue
 		}
 		workers = append(workers, worker)
@@ -256,11 +256,11 @@ func (m *master) handleScheduleRequest(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			err := context.Cause(ctx)
-			log.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
+			slog.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
 			return err
 		case reason := <-m.scheduleReqChan:
 			if reason != ReasonFirstSchedule {
-				log.Info("doSchedule wait", zap.Duration("wait", m.config.ReBalanceWait))
+				slog.Info("doSchedule wait", zap.Duration("wait", m.config.ReBalanceWait))
 				time.Sleep(m.config.ReBalanceWait)
 			}
 			ctx := ctx
@@ -269,10 +269,10 @@ func (m *master) handleScheduleRequest(ctx context.Context) error {
 			}
 			err := m.doSchedule(ctx)
 			if err != nil {
-				log.Error("schedule error,continue", zap.Error(err))
+				slog.Error("schedule error,continue", zap.Error(err))
 				continue
 			}
-			log.Info("schedule done", zap.String("reason", reason))
+			slog.Info("schedule done", zap.String("reason", reason))
 		}
 	}
 }
@@ -281,10 +281,10 @@ func (s *master) doSchedule(ctx context.Context) error {
 	// query all online worker in etcd
 	workerList, err := s.onlineWorkerList(ctx)
 	if err != nil {
-		log.Error("failed to get leader, err:%s", zap.Error(err))
+		slog.Error("failed to get leader, err:%s", zap.Error(err))
 		return err
 	}
-	log.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
+	slog.Info("worker total", zap.Int("count", len(workerList)), zap.Any("array", workerList))
 
 	// start to assign
 	taskList, err := s.config.Generator(ctx)
@@ -292,14 +292,14 @@ func (s *master) doSchedule(ctx context.Context) error {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
 	}
-	log.Info("succeeded to generate all tasks", zap.Int("count", len(taskList)))
+	slog.Info("succeeded to generate all tasks", zap.Int("count", len(taskList)))
 	taskMap := make(map[string]Task)
 	for _, task := range taskList {
 		taskMap[task.ID] = task
 	}
 
 	if len(workerList) != s.MaxNum-1 {
-		log.Info("worker count not expected", zap.Int("expected", s.MaxNum-1))
+		slog.Info("worker count not expected", zap.Int("expected", s.MaxNum-1))
 	}
 	// /20220809/task
 	taskPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
@@ -309,14 +309,14 @@ func (s *master) doSchedule(ctx context.Context) error {
 	if len(workerList) <= 0 {
 		return errors.New("worker count is zero")
 	}
-	log.Info("rebalance workerList", zap.Strings("workerList", workerList))
+	slog.Info("rebalance workerList", zap.Strings("workerList", workerList))
 
 	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := s.assigner.GetReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
 	if err != nil {
 		return err
 	}
 	if len(toDeleteWorkerTaskKey) > 0 {
-		log.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)))
+		slog.Info("to delete expired worker's task folder", zap.Int("len", len(toDeleteWorkerTaskKey)))
 		for prefix := range toDeleteWorkerTaskKey {
 			_, err := s.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
 			if err != nil {
@@ -326,7 +326,7 @@ func (s *master) doSchedule(ctx context.Context) error {
 	}
 	if len(toDeleteTaskKey) > 0 {
 		// get incremental tasks
-		log.Info("to delete expired task ", zap.Int("len", len(toDeleteTaskKey)))
+		slog.Info("to delete expired task ", zap.Int("len", len(toDeleteTaskKey)))
 		for _, prefix := range toDeleteTaskKey {
 			_, err := s.client.KV.Delete(ctx, prefix)
 			if err != nil {
@@ -342,13 +342,13 @@ func (s *master) doSchedule(ctx context.Context) error {
 			total++
 		}
 	}
-	log.Info("assignMap total count", zap.Int("total", total), zap.Uint("queue size", priorityQueue.Size()))
+	slog.Info("assignMap total count", zap.Int("total", total), zap.Uint("queue size", priorityQueue.Size()))
 	var assignCount = 0
 
 	for i := 0; i < total; i++ {
 		taskWorker, _, ok := priorityQueue.Pop()
 		if !ok {
-			log.Error("unexpected error while dequeue")
+			slog.Error("unexpected error while dequeue")
 			break
 		}
 		taskObj := taskWorker.Task
@@ -361,13 +361,13 @@ func (s *master) doSchedule(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		log.Info("put the task to worker", zap.String("taskKey", taskKey), zap.Float64("priority", taskObj.P), zap.String("worker", taskWorker.worker))
+		slog.Info("put the task to worker", zap.String("taskKey", taskKey), zap.Float64("priority", taskObj.P), zap.String("worker", taskWorker.worker))
 		assignCount++
 	}
 	if priorityQueue.Size() != 0 {
-		log.Error("priorityQueue should be empty", zap.Uint("actual", priorityQueue.Size()))
+		slog.Error("priorityQueue should be empty", zap.Uint("actual", priorityQueue.Size()))
 	}
-	log.Info("task re-balance result", zap.Int("created count", assignCount), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
+	slog.Info("task re-balance result", zap.Int("created count", assignCount), zap.Any("toDeleteWorkerTaskKey", toDeleteWorkerTaskKey), zap.Any("toDeleteTaskKey", toDeleteTaskKey))
 	return nil
 }
 
@@ -377,22 +377,22 @@ func (m *master) watchSchedule(ctx context.Context) error {
 	key := GetWorkerBarrierLeftKey(m.RootName)
 	resp, err := m.client.KV.Get(ctx, key)
 	if err != nil {
-		log.Error("get barrier kv failed.", zap.Error(err))
+		slog.Error("get barrier kv failed.", zap.Error(err))
 		return err
 	}
 	if len(resp.Kvs) > 0 {
-		log.Info("no need to gotoBarrier", zap.String("worker", m.Name), zap.String("barrier status left", resp.Kvs[0].String()))
+		slog.Info("no need to gotoBarrier", zap.String("worker", m.Name), zap.String("barrier status left", resp.Kvs[0].String()))
 	} else {
 		err := m.gotoBarrier(ctx)
 		if err != nil {
-			log.Error("failed to gotoBarrier", zap.Error(err))
+			slog.Error("failed to gotoBarrier", zap.Error(err))
 		}
 	}
 
 	m.NotifySchedule(ReasonFirstSchedule)
 	resp, err = m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
-		log.Error("get worker job list failed.", zap.Error(err))
+		slog.Error("get worker job list failed.", zap.Error(err))
 		return err
 	}
 	period := time.NewTicker(m.config.Interval)
@@ -403,7 +403,7 @@ func (m *master) watchSchedule(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			err := context.Cause(ctx)
-			log.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
+			slog.Error("handleScheduleRequest exit, ctx done", zap.Error(err))
 			return err
 		case <-period.C:
 			m.NotifySchedule("periodic task scheduling ")
@@ -426,26 +426,26 @@ func (m *master) gotoBarrier(ctx context.Context) error {
 	key := GetWorkerBarrierName(m.RootName)
 	session, err := concurrency.NewSession(m.client)
 	if err != nil {
-		log.Error("failed to new session", zap.Error(err))
+		slog.Error("failed to new session", zap.Error(err))
 		return err
 	}
 	b := recipe.NewDoubleBarrier(session, key, m.MaxNum)
-	log.Info("scheduler waiting double Barrier", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum))
+	slog.Info("scheduler waiting double Barrier", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum))
 	err = b.Enter()
 	if err != nil {
-		log.Error("scheduler enter double Barrier error", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum), zap.Error(err))
+		slog.Error("scheduler enter double Barrier error", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum), zap.Error(err))
 		return err
 	}
-	log.Info("scheduler enter double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
+	slog.Info("scheduler enter double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
 	_ = session.Close()
-	log.Info("scheduler left double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
+	slog.Info("scheduler left double Barrier", zap.String("scheduler", m.Name), zap.Error(err))
 	statusKey := GetWorkerBarrierLeftKey(m.RootName)
 	txnResp, err := m.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, time.Now().Format(time.RFC3339))).Commit()
 	if err != nil {
-		log.Error("failed to set barrier left", zap.Error(err))
+		slog.Error("failed to set barrier left", zap.Error(err))
 		return err
 	}
-	log.Info("scheduler set once schedule status done", zap.String("key", statusKey), zap.Bool("Succeeded", txnResp.Succeeded))
+	slog.Info("scheduler set once schedule status done", zap.String("key", statusKey), zap.Bool("Succeeded", txnResp.Succeeded))
 	return nil
 }
 

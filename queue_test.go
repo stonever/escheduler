@@ -1,13 +1,14 @@
 package escheduler
 
 import (
+	"testing"
+	"time"
+
 	. "github.com/smartystreets/goconvey/convey"
-	"github.com/stonever/escheduler/log"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"go.uber.org/zap"
-	"testing"
-	"time"
+	"golang.org/x/exp/slog"
 )
 
 func TestQueueSamePriorityFIFO(t *testing.T) {
@@ -25,7 +26,7 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 	}
 	client, err := clientv3.New(node.EtcdConfig)
 	if err != nil {
-		log.Fatal(err.Error())
+		t.Fatal(err.Error())
 	}
 	defer client.Close()
 	q := recipe.NewPriorityQueue(client, node.RootName)
@@ -33,29 +34,29 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 
 		err := q.Enqueue("coinbase", 0)
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 		}
 		err = q.Enqueue("binance", 0)
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 		}
 		err = q.Enqueue("huobi", 0)
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 		}
 		err = q.Enqueue("okexv5", 0)
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 		}
 	}()
 	i := 0
 	for {
 		res, err := q.Dequeue()
 		if err != nil {
-			log.Fatal(err.Error())
+			t.Fatal(err.Error())
 			return
 		}
-		log.Info("接收值:", zap.Any("received", res))
+		slog.Info("接收值:", zap.Any("received", res))
 
 		if i == 0 {
 			Convey("first must be binance ", t, func() {
