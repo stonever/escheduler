@@ -100,7 +100,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 
 	for _, kvPair := range taskPathResp {
 
-		workerKey, _ := ParseWorkerIDFromTaskKey(a.rootName, string(kvPair.Key))
+		workerKey, _ := parseWorkerIDFromTaskKey(a.rootName, string(kvPair.Key))
 		_, ok := workerMap[workerKey]
 		if !ok {
 			parentPath := path.Dir(string(kvPair.Key))
@@ -108,7 +108,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			continue
 		}
 		var task string
-		task, err = ParseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
+		task, err = parseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
 		if err != nil {
 			slog.Debug("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))

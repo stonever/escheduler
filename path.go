@@ -7,19 +7,19 @@ import (
 	"github.com/pkg/errors"
 )
 
-func ParseTaskFromValue(value []byte) (task Task, err error) {
+func parseTaskFromValue(value []byte) (task Task, err error) {
 	err = json.Unmarshal(value, &task)
 	return
 }
 
-// ParseTaskIDFromTaskKey
+// parseTaskIDFromTaskKey
 //
 //	@Description: task id is at the end
 //	@param rootName
 //	@param key
 //	@return string
 //	@return error
-func ParseTaskIDFromTaskKey(rootName, key string) (string, error) {
+func parseTaskIDFromTaskKey(rootName, key string) (string, error) {
 	// key is /root/task/192.168.193.131-125075/10
 	// change to task/192.168.193.131-125075/10
 	key = strings.Replace(key, "/"+rootName+"/", "", 1)
@@ -31,14 +31,14 @@ func ParseTaskIDFromTaskKey(rootName, key string) (string, error) {
 	return arr[len(arr)-1], nil
 }
 
-// ParseWorkerIDFromWorkerKey
+// parseWorkerIDFromWorkerKey
 //
 //	@Description: worker id is at the end
 //	@param rootName
 //	@param key
 //	@return string
 //	@return error
-func ParseWorkerIDFromWorkerKey(rootName, key string) (string, error) {
+func parseWorkerIDFromWorkerKey(rootName, key string) (string, error) {
 	// key is /root/worker/mq455
 	// change to worker/mq455
 	key = strings.Replace(key, "/"+rootName+"/", "", 1)
@@ -50,13 +50,13 @@ func ParseWorkerIDFromWorkerKey(rootName, key string) (string, error) {
 	return arr[len(arr)-1], nil
 }
 
-// ParseWorkerIDFromTaskKey
+// parseWorkerIDFromTaskKey
 //
 //	@Description:
 //	@param rootName, like root
 //	@param key like /root/task/192.168.193.131-28682/raw data for task 10
 //	@return string 192.168.193.131-28682
-func ParseWorkerIDFromTaskKey(rootName, key string) (string, error) {
+func parseWorkerIDFromTaskKey(rootName, key string) (string, error) {
 	key = strings.Replace(key, "/"+rootName+"/", "", 1)
 	expected := 3
 	arr := strings.SplitN(key, "/", expected)

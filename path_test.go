@@ -27,7 +27,7 @@ func TestParseTaskIDFromTaskKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseTaskIDFromTaskKey(tt.args.rootName, tt.args.key)
+			got, err := parseTaskIDFromTaskKey(tt.args.rootName, tt.args.key)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseTaskAbbrFromTaskKey() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -62,7 +62,7 @@ func TestParseWorkerIDFromTaskKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseWorkerIDFromTaskKey(tt.args.rootName, tt.args.key)
+			got, err := parseWorkerIDFromTaskKey(tt.args.rootName, tt.args.key)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseTaskAbbrFromTaskKey() error = %v, wantErr %v", err, tt.wantErr)
 				return

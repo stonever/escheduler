@@ -98,7 +98,7 @@ func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error)
 		return nil, errors.Wrapf(err, "failed to get etcd kv")
 	}
 	for _, value := range resp.Kvs {
-		abbr, err := ParseTaskIDFromTaskKey(w.RootName, string(value.Key))
+		abbr, err := parseTaskIDFromTaskKey(w.RootName, string(value.Key))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse abbr:%s", value.Key)
 		}
@@ -273,7 +273,7 @@ func (w *workerInstance) watch() error {
 	// add existed task
 	for _, kvPair := range watcher.IncipientKVs {
 		// id = kvPair.Key
-		task, err := ParseTaskFromValue(kvPair.Value)
+		task, err := parseTaskFromValue(kvPair.Value)
 		if err != nil {
 			err = errors.Wrapf(err, "Unmarshal task key:%s", kvPair.Key)
 			return err
@@ -297,7 +297,7 @@ func (w *workerInstance) watch() error {
 			case mvccpb.PUT:
 				// 任务新建事件
 				// id = kvPair.Key
-				task, err := ParseTaskFromValue(event.Kv.Value)
+				task, err := parseTaskFromValue(event.Kv.Value)
 				if err != nil {
 					slog.Error("[watch] failed to parse created task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue
@@ -306,7 +306,7 @@ func (w *workerInstance) watch() error {
 			case mvccpb.DELETE:
 				// 任务delete event
 				// id = kvPair.Key
-				taskID, err := ParseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
+				taskID, err := parseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
 				if err != nil {
 					slog.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
 					continue

@@ -220,7 +220,7 @@ func (m *master) onlineWorkerList(ctx context.Context) (workersWithJob []string,
 	}
 	workers := make([]string, 0, len(resp.Kvs))
 	for _, kvPair := range resp.Kvs {
-		worker, err := ParseWorkerIDFromWorkerKey(m.RootName, string(kvPair.Key))
+		worker, err := parseWorkerIDFromWorkerKey(m.RootName, string(kvPair.Key))
 		if err != nil {
 			slog.Error("ParseWorkerFromWorkerKey error", zap.ByteString("key", kvPair.Key), zap.Error(err))
 			continue

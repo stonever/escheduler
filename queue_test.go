@@ -26,7 +26,7 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 	}
 	client, err := clientv3.New(node.EtcdConfig)
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Fatal(err)
 	}
 	defer client.Close()
 	q := recipe.NewPriorityQueue(client, node.RootName)
@@ -34,26 +34,30 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 
 		err := q.Enqueue("coinbase", 0)
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err)
+			return
 		}
 		err = q.Enqueue("binance", 0)
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err)
+			return
 		}
 		err = q.Enqueue("huobi", 0)
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err)
+			return
 		}
 		err = q.Enqueue("okexv5", 0)
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Error(err)
+			return
 		}
 	}()
 	i := 0
 	for {
 		res, err := q.Dequeue()
 		if err != nil {
-			t.Fatal(err.Error())
+			t.Fatal(err)
 			return
 		}
 		slog.Info("接收值:", zap.Any("received", res))
