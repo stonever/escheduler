@@ -263,16 +263,23 @@ func (m *master) handleScheduleRequest(ctx context.Context) error {
 				slog.Info("doSchedule wait", zap.Duration("wait", m.config.ReBalanceWait))
 				time.Sleep(m.config.ReBalanceWait)
 			}
-			ctx := ctx
-			if m.config.Timeout > 0 {
-				ctx, _ = context.WithTimeout(ctx, m.config.Timeout)
-			}
-			err := m.doSchedule(ctx)
-			if err != nil {
-				slog.Error("schedule error,continue", zap.Error(err))
-				continue
-			}
-			slog.Info("schedule done", zap.String("reason", reason))
+			func() {
+				var (
+					ctx    = ctx
+					cancel context.CancelFunc
+				)
+				if m.config.Timeout > 0 {
+					ctx, cancel = context.WithTimeout(ctx, m.config.Timeout)
+					defer cancel()
+				}
+				err := m.doSchedule(ctx)
+				if err != nil {
+					slog.Error("schedule error,continue", zap.Error(err))
+					return
+				}
+				slog.Info("schedule done", zap.String("reason", reason))
+			}()
+
 		}
 	}
 }
