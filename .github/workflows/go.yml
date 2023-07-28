@@ -39,7 +39,10 @@ jobs:
           fi
 
       - name: Test
-        run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+        # ./... 是go的标准用法，表示会递归执行目录下所有的单测文件
+        # covermode=atomic
+        # run: go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic  hash_test.go hash.go
 
       - name: Codecov
         uses: codecov/codecov-action@v3
