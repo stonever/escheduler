@@ -27,7 +27,7 @@ jobs:
       - name: Get dependencies
         run: |
           go get -v -t -d ./...
-
+      # Exit with error if go.mod file changed after run 'go mod tidy'
       - name: Lint
         run: |
           go vet -stdmethods=false $(go list ./...)
