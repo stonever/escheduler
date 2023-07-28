@@ -46,11 +46,3 @@ jobs:
 
       - name: Codecov
         uses: codecov/codecov-action@v3
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@master
-        with:
-          version: latest
-          args: release --rm-dist
-          workdir: ./cmd/myapp # <-- path to directory with main() func
-        env:
-          GITHUB_TOKEN: ${{ secrets.GO_RELEASER_GITHUB_TOKEN }}
