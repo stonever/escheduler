@@ -406,10 +406,10 @@ func (w *workerInstance) register() error {
 		select {
 		case <-ticker.C:
 			slog.Info("worker is alive", zap.String("worker key", workerKey))
-		case _, ok := <-keepRespChan:
+		case msg, ok := <-keepRespChan:
 			// closed keepRespChan  can be a fatal error,other error should only be logged
 			if !ok {
-				return errors.New("keepRespChan is closed,the worker has been lost")
+				return errors.Errorf("keepRespChan is closed,the worker has been lost,last msg:%s", msg)
 			}
 		case resp, ok := <-watchChan:
 			if !ok {
@@ -419,9 +419,9 @@ func (w *workerInstance) register() error {
 				watchChan = w.client.Watch(ctx, workerKey)
 				continue
 			}
-			if resp.Canceled {
+			if resp.Canceled || resp.Err() != nil {
 				// for example,if etcd node restart, resp will raise error, mvcc: requested revision has been compacted
-				slog.Warn("watchChan is canceled with error,the worker may be lost", resp.Err())
+				slog.Error("watchChan resp error", "Canceled", resp.Canceled, "error", resp.Err(), "resp", resp)
 				watchChan = w.client.Watch(ctx, workerKey)
 				continue
 			}
