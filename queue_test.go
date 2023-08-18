@@ -20,9 +20,9 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220624",
-		TTL:      15,
-		MaxNum:   2,
+		RootName:    "20220624",
+		TTL:         15,
+		MaxNumNodes: 2,
 	}
 	client, err := clientv3.New(node.EtcdConfig)
 	if err != nil {

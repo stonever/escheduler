@@ -10,11 +10,11 @@ const (
 	ReasonFirstSchedule = "first schedule"
 )
 const (
-	WorkerStatusNew         int32 = iota // 0
-	WorkerStatusRegister                 // 1
-	WorkerStatusInBarrier                // 2
-	WorkerStatusLeftBarrier              // 3
-	WorkerStatusDead                     // 4
+	WorkerStatusNew         = "new"          // 0
+	WorkerStatusRegistered  = "registered"   // 1
+	WorkerStatusInBarrier   = "in_barrier"   // 2
+	WorkerStatusLeftBarrier = "left_barrier" // 3
+	WorkerStatusDead        = "dead"         // 4
 )
 const (
 	WorkerValueRunning = "running"

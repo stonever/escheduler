@@ -72,7 +72,7 @@ func NewMaster(config MasterConfig, node Node) (Master, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to validate config")
 	}
-	err = node.Validation()
+	err = node.Validate()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to validate node")
 	}
@@ -305,8 +305,8 @@ func (s *master) doSchedule(ctx context.Context) error {
 		taskMap[task.ID] = task
 	}
 
-	if len(workerList) != s.MaxNum-1 {
-		slog.Info("worker count not expected", zap.Int("expected", s.MaxNum-1))
+	if len(workerList) != s.MaxNumNodes-1 {
+		slog.Info("worker count not expected", zap.Int("expected", s.MaxNumNodes-1))
 	}
 	// /20220809/task
 	taskPathResp, err := s.client.KV.Get(ctx, s.taskPath(), clientv3.WithPrefix())
@@ -430,17 +430,18 @@ func (m *master) watchSchedule(ctx context.Context) error {
 }
 
 func (m *master) gotoBarrier(ctx context.Context) error {
-	key := GetWorkerBarrierName(m.RootName)
+	barrierKey := GetWorkerBarrierName(m.RootName)
+	slog.Info("try to enter the barrier", "scheduler", m.Name, "barrier_key", barrierKey)
 	session, err := concurrency.NewSession(m.client)
 	if err != nil {
 		slog.Error("failed to new session", zap.Error(err))
 		return err
 	}
-	b := recipe.NewDoubleBarrier(session, key, m.MaxNum)
-	slog.Info("scheduler waiting double Barrier", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum))
+	b := recipe.NewDoubleBarrier(session, barrierKey, m.MaxNumNodes)
+	slog.Info("scheduler waiting double Barrier", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNumNodes))
 	err = b.Enter()
 	if err != nil {
-		slog.Error("scheduler enter double Barrier error", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNum), zap.Error(err))
+		slog.Error("scheduler enter double Barrier error", zap.String("scheduler", m.Name), zap.Int("num", m.MaxNumNodes), zap.Error(err))
 		return err
 	}
 	slog.Info("scheduler enter double Barrier", zap.String("scheduler", m.Name), zap.Error(err))

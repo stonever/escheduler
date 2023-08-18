@@ -3,8 +3,8 @@ package escheduler
 import (
 	"context"
 	"encoding/json"
+	"go.uber.org/atomic"
 	"path"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/slog"
@@ -25,8 +25,7 @@ const (
 )
 
 var (
-	ErrWorkerStatusNotInBarrier = errors.New("worker status is not in barrier")
-	ErrWorkerNumExceedMaximum   = errors.New("worker num exceed maximum")
+	ErrWorkerNumExceedMaximum = errors.New("worker num exceed maximum")
 )
 
 type TaskChange struct {
@@ -57,29 +56,29 @@ func (t TaskChange) DeletedTask() (string, bool) {
 	return "", false
 }
 
-// Worker instances are used to handle individual task.
-// It also provides hooks for your worker session life-cycle and allow you to
-// trigger logic before or after the worker loop(s).
-//
-// PLEASE NOTE that handlers are likely be called from several goroutines concurrently,
-// ensure that all state is safely protected against race conditions.
-type Worker interface {
-	Start() // Start is run at the beginning of a new session, before ConsumeClaim.
-	Stop()
-	Status() int32
-	Tasks(ctx context.Context) (map[string]struct{}, error)
-	WatchTask() <-chan WatchEvent
-	TryLeaveBarrier() error
-}
+//// Worker instances are used to handle individual task.
+//// It also provides hooks for your worker session life-cycle and allow you to
+//// trigger logic before or after the worker loop(s).
+////
+//// PLEASE NOTE that handlers are likely be called from several goroutines concurrently,
+//// ensure that all state is safely protected against race conditions.
+//type Worker interface {
+//	Start() // Start is run at the beginning of a new session, before ConsumeClaim.
+//	Stop()
+//	Status() int32
+//	Tasks(ctx context.Context) (map[string]struct{}, error)
+//	WatchTask() <-chan WatchEvent
+//	TryLeaveBarrier() error
+//}
 
-type workerInstance struct {
+type Worker struct {
 	Node
 
 	// path
 	workerPath string // eg. /20220624/worker/
 	taskChan   chan WatchEvent
 	taskPath   string // eg. 20220624/task/192.168.193.131-101576/
-	status     atomic.Int32
+	status     atomic.String
 
 	isAllRunning bool
 
@@ -90,7 +89,7 @@ type workerInstance struct {
 	cancel context.CancelFunc
 }
 
-func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error) {
+func (w *Worker) Tasks(ctx context.Context) (map[string]struct{}, error) {
 	prefix := w.taskPath
 	ret := make(map[string]struct{})
 	resp, err := w.client.Get(ctx, prefix, clientv3.WithPrefix())
@@ -108,7 +107,7 @@ func (w *workerInstance) Tasks(ctx context.Context) (map[string]struct{}, error)
 	return ret, nil
 }
 
-func (w *workerInstance) WatchTask() <-chan WatchEvent {
+func (w *Worker) WatchTask() <-chan WatchEvent {
 	return w.taskChan
 }
 
@@ -122,11 +121,11 @@ func GetWorkerBarrierLeftKey(rootName string) string {
 	return path.Join("/", rootName, "worker_barrier_left")
 }
 
-func (w *workerInstance) Status() int32 {
+func (w *Worker) Status() string {
 	return w.status.Load()
 }
 
-func (w *workerInstance) keepOnline() {
+func (w *Worker) keepOnline() {
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -140,30 +139,25 @@ func (w *workerInstance) keepOnline() {
 	}
 }
 
-func (w *workerInstance) TryLeaveBarrier() error {
-	if w.Status() == WorkerStatusLeftBarrier {
-		slog.Info("work status is WorkerStatusLeftBarrier", zap.String("worker name", w.Name))
-		return nil
+func (w *Worker) TryLeaveBarrier(d time.Duration) bool {
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+	select {
+	case w.leavingBarrier <- struct{}{}:
+		return true
+	case <-ticker.C:
+		return false
 	}
-	if w.Status() == WorkerStatusInBarrier {
-		select {
-		case w.leavingBarrier <- struct{}{}:
-		default:
-		}
-
-		return nil
-	}
-	return ErrWorkerStatusNotInBarrier
 }
-func (w *workerInstance) IsAllRunning() bool {
+func (w *Worker) IsAllRunning() bool {
 	return w.isAllRunning
 }
-func (w *workerInstance) SetStatus(status int32) {
+func (w *Worker) SetStatus(status string) {
 
 	old := w.status.Swap(status)
-	slog.Info("SetStatus", status, old)
+	slog.Info("worker status changed", "new", status, "old", old)
 }
-func (w *workerInstance) Start() {
+func (w *Worker) Start() {
 	var (
 		wg conc.WaitGroup
 	)
@@ -184,15 +178,13 @@ func (w *workerInstance) Start() {
 
 			}
 			time.Sleep(time.Second)
-			if w.Status() != WorkerStatusRegister {
+			if w.Status() != WorkerStatusRegistered {
 				continue
 			}
-			slog.Info("try to barrier", zap.String("worker", w.Name), zap.Int32("status", w.Status()))
 			w.tryToBarrier()
 		}
 	})
-	var status int32
-	for status = 0; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
+	for status := ""; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
 		time.Sleep(time.Second)
 	}
 	slog.Info("all workers have been in double Barrier, begin to watch my own task path", w.Name)
@@ -204,22 +196,23 @@ func (w *workerInstance) Start() {
 	})
 	return
 }
-func (w *workerInstance) tryToBarrier() {
-	key := GetWorkerBarrierLeftKey(w.RootName)
+func (w *Worker) tryToBarrier() {
+	leftBarrierKey := GetWorkerBarrierLeftKey(w.RootName)
 	ctx := w.ctx
-	if resp, _ := w.client.KV.Get(ctx, key); len(resp.Kvs) > 0 {
-		slog.Info("no need to gotoBarrier", w.Name, resp.Kvs[0].String())
+	if resp, _ := w.client.KV.Get(ctx, leftBarrierKey); len(resp.Kvs) > 0 {
+		slog.Info("no need to enter barrier", w.Name, resp.Kvs[0].String())
 		w.SetStatus(WorkerStatusLeftBarrier)
 		return
 	}
 	err := w.gotoBarrier(ctx)
 	if err != nil {
-		slog.Error("failed to gotoBarrier", zap.Error(err))
+		slog.Error("failed to gotoBarrier", "error", err)
 	}
 }
-func (w *workerInstance) gotoBarrier(ctx context.Context) error {
-	num := w.MaxNum
+func (w *Worker) gotoBarrier(ctx context.Context) error {
+	num := w.MaxNumNodes
 	barrier := GetWorkerBarrierName(w.RootName)
+	slog.Info("enter the barrier...", "worker", w.Name, "barrier_key", barrier)
 	s, err := concurrency.NewSession(w.client)
 	if err != nil {
 		return err
@@ -227,7 +220,6 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	defer s.Close()
 
 	b := recipe.NewDoubleBarrier(s, barrier, num)
-	slog.Info("worker waiting double Barrier", zap.String("worker", w.Name), zap.Int("num", num))
 	err = b.Enter()
 	if err != nil {
 		return err
@@ -247,22 +239,22 @@ func (w *workerInstance) gotoBarrier(ctx context.Context) error {
 	w.SetStatus(WorkerStatusLeftBarrier)
 	return nil
 }
-func (w *workerInstance) key() string {
+func (w *Worker) key() string {
 	return path.Join(w.workerPath, w.Name)
 }
-func (w *workerInstance) Stop() {
+func (w *Worker) Stop() {
 	w.SetStatus(WorkerStatusDead)
 	_ = w.client.Close()
 }
-func (w *workerInstance) Add(task Task) {
+func (w *Worker) Add(task Task) {
 	w.taskChan <- TaskChange{Action: ActionNew, Task: task}
 }
-func (w *workerInstance) Del(id string) {
+func (w *Worker) Del(id string) {
 	var tc = TaskChange{Action: ActionDeleted}
 	tc.ID = id
 	w.taskChan <- tc
 }
-func (w *workerInstance) watch() error {
+func (w *Worker) watch() error {
 	ctx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
 
@@ -321,13 +313,13 @@ func (w *workerInstance) watch() error {
 }
 
 // NewWorker create a worker
-func NewWorker(node Node) (Worker, error) {
-	err := node.Validation()
+func NewWorker(node Node) (*Worker, error) {
+	err := node.Validate()
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot give the name to scheduler")
 	}
 
-	worker := workerInstance{
+	worker := Worker{
 		Node:           node,
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
 		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",
@@ -350,7 +342,7 @@ func NewWorker(node Node) (Worker, error) {
 // if reach maximum, return err
 // condition of the func returned is 1. worker key has been deleted
 // 2. keepRespChan is closed
-func (w *workerInstance) register() error {
+func (w *Worker) register() error {
 	var (
 		ctx        = w.ctx
 		workerPath = w.workerPath
@@ -372,8 +364,8 @@ func (w *workerInstance) register() error {
 	if err != nil {
 		return err
 	}
-	if len(resp.Kvs) >= w.MaxNum-1 {
-		return errors.Wrapf(ErrWorkerNumExceedMaximum, "now worker total is %d >= max is %d", len(resp.Kvs), w.MaxNum-1)
+	if len(resp.Kvs) >= w.MaxNumNodes-1 {
+		return errors.Wrapf(ErrWorkerNumExceedMaximum, "now worker total is %d >= max is %d", len(resp.Kvs), w.MaxNumNodes-1)
 	}
 	// 创建租约
 	leaseResp, err := w.client.Lease.Grant(ctx, w.TTL)
@@ -399,7 +391,7 @@ func (w *workerInstance) register() error {
 	watchStartRevision := putResp.Header.Revision + 1
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
 	slog.Info("succeeded to register worker", workerKey, w.TTL)
-	w.SetStatus(WorkerStatusRegister)
+	w.SetStatus(WorkerStatusRegistered)
 	ticker := time.NewTicker(time.Minute * 10)
 	defer ticker.Stop()
 	for {

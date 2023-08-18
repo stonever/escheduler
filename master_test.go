@@ -27,9 +27,9 @@ func TestStopScheduler(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220624",
-		TTL:      15,
-		MaxNum:   2,
+		RootName:    "20220624",
+		TTL:         15,
+		MaxNumNodes: 2,
 	}
 	schedConfig := MasterConfig{
 		Interval:  time.Second * 10,
@@ -60,7 +60,7 @@ func TestMultiMaster(t *testing.T) {
 	}
 	wg.Wait()
 }
-func newMaster(rootName string, name string, num int) (worker Worker, master Master) {
+func newMaster(rootName string, name string, num int) (worker *Worker, master Master) {
 	maxNum := num + 1
 	node := Node{
 		EtcdConfig: clientv3.Config{
@@ -69,10 +69,10 @@ func newMaster(rootName string, name string, num int) (worker Worker, master Mas
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   maxNum,
-		Name:     name,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: maxNum,
+		Name:        name,
 	}
 	schedConfig := MasterConfig{
 		Interval:      time.Second * 60,
@@ -166,9 +166,9 @@ func TestWatchTaskDel(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: fmt.Sprintf("kline-pump-%d", time.Now().Unix()),
-		TTL:      15,
-		MaxNum:   2,
+		RootName:    fmt.Sprintf("kline-pump-%d", time.Now().Unix()),
+		TTL:         15,
+		MaxNumNodes: 2,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -216,9 +216,9 @@ func TestHashBalancer(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20230109",
-		TTL:      15,
-		MaxNum:   2,
+		RootName:    "20230109",
+		TTL:         15,
+		MaxNumNodes: 2,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -249,10 +249,8 @@ func TestHashBalancer(t *testing.T) {
 		for v := range worker.WatchTask() {
 			slog.Info("receive", zap.Any("v", v))
 		}
-		err = worker.TryLeaveBarrier()
-		if err != nil {
-			panic(err.Error())
-		}
+		worker.TryLeaveBarrier(time.Second)
+
 	}()
 	go func() {
 		time.Sleep(time.Second * 30)
@@ -290,9 +288,9 @@ func TestWorkerRestart(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   3 + 1,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 3 + 1,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -355,7 +353,7 @@ func TestWorkerRestart(t *testing.T) {
 				worker1.Start()
 				eventC1 = worker1.WatchTask()
 			case <-time.Tick(time.Second * 30):
-				err = worker1.TryLeaveBarrier()
+				worker1.TryLeaveBarrier(time.Second)
 			case task := <-eventC1:
 				t.Logf("worker1 do task:%s", task)
 			}
@@ -366,7 +364,7 @@ func TestWorkerRestart(t *testing.T) {
 		for {
 			select {
 			case <-time.Tick(time.Second * 30):
-				err = worker1.TryLeaveBarrier()
+				worker1.TryLeaveBarrier(time.Second)
 			case task := <-eventC2:
 				t.Logf("worker2 do task:%s", task)
 			}
@@ -376,7 +374,7 @@ func TestWorkerRestart(t *testing.T) {
 		for {
 			select {
 			case <-time.Tick(time.Second * 30):
-				err = worker3.TryLeaveBarrier()
+				worker3.TryLeaveBarrier(time.Second)
 			case task := <-eventC3:
 				t.Logf("worker3 do task:%s", task)
 			}
@@ -394,8 +392,8 @@ func TestLoadBalancer(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		TTL:    60,
-		MaxNum: workerNum + 1,
+		TTL:         60,
+		MaxNumNodes: workerNum + 1,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Second * 10,

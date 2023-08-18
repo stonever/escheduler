@@ -13,21 +13,21 @@ type Node struct {
 	RootName   string
 	// TTL configures the session's TTL in seconds.
 	// If TTL is <= 0, the default 60 seconds TTL will be used.
-	TTL    int64 // worker registered in etcd
-	client *clientv3.Client
-	MaxNum int    // total worker num + 1 scheduler
-	Name   string // if not set, default {ip}-{pid}
+	TTL         int64 // worker registered in etcd
+	client      *clientv3.Client
+	MaxNumNodes int    // total worker num + 1 scheduler
+	Name        string // if not set, default {ip}-{pid}
 }
 
-func (n *Node) Validation() error {
+func (n *Node) Validate() error {
 	if n.TTL == 0 {
 		n.TTL = 10
 	}
 	if len(n.RootName) == 0 {
 		return errors.New("RootName is required")
 	}
-	if n.MaxNum < 2 {
-		return errors.Errorf("node maximum is %d <2 ", n.MaxNum)
+	if n.MaxNumNodes < 2 {
+		return errors.Errorf("MaxNumNodes is %d <2 ", n.MaxNumNodes)
 	}
 	if len(n.Name) == 0 {
 		var err error
@@ -38,7 +38,7 @@ func (n *Node) Validation() error {
 	}
 	return nil
 }
-func (n Node) GetDefaultName() (string, error) {
+func (n *Node) GetDefaultName() (string, error) {
 	ip, err := GetLocalIP()
 	if err != nil {
 		return "", errors.Wrapf(err, "cannot get local ip")

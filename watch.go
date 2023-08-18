@@ -55,7 +55,7 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 
 			}
 			rch := client.Watch(ctx, pathPrefix, clientv3.WithPrefix(), clientv3.WithCreatedNotify(), clientv3.WithRev(w.revision))
-			slog.Info("start watcher...", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+			slog.Info("start watcher...", "prefix", pathPrefix, "revision", w.revision)
 			//if ctx done, rch will be closed, for loop will end
 			for n := range rch {
 				if n.Created {

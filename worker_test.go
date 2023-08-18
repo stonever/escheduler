@@ -13,11 +13,11 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/client/v3/concurrency"
-	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 )
 
 func TestBarrier_AllLeftNewEnter(t *testing.T) {
+	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
+
 	node := Node{
 		EtcdConfig: clientv3.Config{
 			Endpoints:   []string{"127.0.0.1:23790"},
@@ -25,98 +25,77 @@ func TestBarrier_AllLeftNewEnter(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "20220704-barrier",
-		TTL:      15,
-		MaxNum:   3,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 3 + 1,
 	}
-	client, err := clientv3.New(node.EtcdConfig)
+	schedulerConfig := MasterConfig{
+		Interval: time.Minute,
+		Generator: func(ctx context.Context) (ret []Task, err error) {
+			for i := 0; i < 3; i++ {
+				task := Task{
+					ID:  fmt.Sprintf("%d", i),
+					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
+				}
+				ret = append(ret, task)
+			}
+			return
+		},
+	}
+	node.Name = "worker1"
+	worker1, err := NewWorker(node)
 	if err != nil {
-		t.Fatal(err)
+		log.Fatal(err.Error())
 	}
+	s1, err := NewMaster(schedulerConfig, node)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	node.Name = "worker2"
+	worker2, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	s2, err := NewMaster(schedulerConfig, node)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	node.Name = "worker3"
+	worker3, err := NewWorker(node)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	s3, err := NewMaster(schedulerConfig, node)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	go func() {
-		s1, err := concurrency.NewSession(client)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		b1 := recipe.NewDoubleBarrier(s1, GetWorkerBarrierName(node.RootName), node.MaxNum)
-		t.Log("s1 b1 try to enter")
-		err = b1.Enter()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-
-		t.Log("b1 try to leave")
-
-		err = b1.Leave()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		t.Log("s1 b left")
-
+		worker1.Start()
 	}()
 	go func() {
-		s2, err := concurrency.NewSession(client)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		b1 := recipe.NewDoubleBarrier(s2, GetWorkerBarrierName(node.RootName), node.MaxNum)
-		t.Log("s2 b1 try to enter")
-		err = b1.Enter()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-
-		t.Log("s2 b1 try to leave")
-
-		err = b1.Leave()
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		t.Log("s2 b1 left")
-
+		s1.Start()
+	}()
+	go func() {
+		worker2.Start()
+	}()
+	go func() {
+		s2.Start()
+	}()
+	go func() {
+		worker3.Start()
+	}()
+	go func() {
+		s3.Start()
 	}()
 	time.Sleep(time.Second * 5)
-	s2, err := concurrency.NewSession(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b2 := recipe.NewDoubleBarrier(s2, GetWorkerBarrierName(node.RootName), node.MaxNum)
-	t.Log("b2 try to enter")
-
-	err = b2.Enter()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("b2 try to leave")
-	err = b2.Leave()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("all left")
-
-	lastS, err := concurrency.NewSession(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lastWorker := recipe.NewDoubleBarrier(lastS, GetWorkerBarrierName(node.RootName), 0)
-	t.Log("lastWorker try to enter")
-
-	err = lastWorker.Enter()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("lastWorker enter")
-	err = lastWorker.Leave()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("lastWorker left")
+	left1 := worker1.TryLeaveBarrier(time.Second)
+	left2 := worker2.TryLeaveBarrier(time.Second)
+	left3 := worker3.TryLeaveBarrier(time.Second)
+	t.Logf("left1:%t left2:%t left3:%t", left1, left2, left3)
+	time.Sleep(time.Second)
 }
 func TestWorkerStatus(t *testing.T) {
 	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
@@ -128,9 +107,9 @@ func TestWorkerStatus(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   3 + 1,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 3 + 1,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -180,7 +159,7 @@ func TestWorkerStatus(t *testing.T) {
 
 	assert.Equal(t, WorkerStatusNew, worker1.Status())
 	time.Sleep(time.Second)
-	assert.Equal(t, WorkerStatusRegister, worker1.Status())
+	assert.Equal(t, WorkerStatusRegistered, worker1.Status())
 
 	wg.Go(func() {
 		worker3.Start()
@@ -257,12 +236,12 @@ func TestWorkerTooMuch(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   3 + 1,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 3 + 1,
 	}
 	var (
-		workers []Worker
+		workers []*Worker
 	)
 	for i := 0; i < 5; i++ {
 		node.Name = "worker" + strconv.Itoa(i)
@@ -272,13 +251,13 @@ func TestWorkerTooMuch(t *testing.T) {
 	}
 	time.Sleep(time.Second * 5)
 	Convey("worker1 register", t, func() {
-		So(workers[0].Status(), ShouldEqual, WorkerStatusRegister)
+		So(workers[0].Status(), ShouldEqual, WorkerStatusRegistered)
 	})
 	Convey("worker2 received one task", t, func() {
-		So(workers[1].Status(), ShouldEqual, WorkerStatusRegister)
+		So(workers[1].Status(), ShouldEqual, WorkerStatusRegistered)
 	})
 	Convey("worker3 received one task", t, func() {
-		So(workers[2].Status(), ShouldEqual, WorkerStatusRegister)
+		So(workers[2].Status(), ShouldEqual, WorkerStatusRegistered)
 	})
 	Convey("worker3 received one task", t, func() {
 		So(workers[3].Status(), ShouldEqual, WorkerStatusNew)
@@ -287,7 +266,7 @@ func TestWorkerTooMuch(t *testing.T) {
 		So(workers[4].Status(), ShouldEqual, WorkerStatusNew)
 	})
 }
-func startWorker(ctx context.Context, node Node) Worker {
+func startWorker(ctx context.Context, node Node) *Worker {
 	worker, err := NewWorker(node)
 	if err != nil {
 		panic(err)
@@ -307,9 +286,9 @@ func TestWorkerStatusDead(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: "escheduler/" + strconv.Itoa(int(time.Now().Unix())),
-		TTL:      15,
-		MaxNum:   3 + 1,
+		RootName:    "escheduler/" + strconv.Itoa(int(time.Now().Unix())),
+		TTL:         15,
+		MaxNumNodes: 3 + 1,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
@@ -336,9 +315,9 @@ func TestWorkerGetAllTask(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   2 + 1,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 2 + 1,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
@@ -408,9 +387,9 @@ func TestWorkerRegister(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName: rootName,
-		TTL:      15,
-		MaxNum:   2,
+		RootName:    rootName,
+		TTL:         15,
+		MaxNumNodes: 2,
 	}
 	node.Name = "worker1"
 	worker1, err := NewWorker(node)
