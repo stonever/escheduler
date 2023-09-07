@@ -96,9 +96,6 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			taskNotHash[value.Group]++
 		}
 	}
-	if a.logger != nil {
-		a.logger.Info("taskNotHash group", "group", taskNotHash)
-	}
 
 	for _, kvPair := range taskPathResp {
 
@@ -159,9 +156,6 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			workerKey, err = leastLoadBalancer.Balance(string(taskObj.ID))
 			if err != nil {
 				return
-			}
-			if a.logger != nil {
-				a.logger.Info("assign the task to target worker", "group", taskObj.Group, "taskID", taskObj.ID, "worker", workerKey)
 			}
 			leastLoadBalancer.Inc(workerKey)
 			assignMap[workerKey] = append(assignMap[workerKey], taskObj)

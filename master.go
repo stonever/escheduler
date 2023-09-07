@@ -153,7 +153,7 @@ func (m *Master) Campaign(ctx context.Context) (err error) {
 	// 竞选 Leader，直到成为 Leader 函数Campaign才返回
 	err = election.Campaign(ctx, m.Name)
 	if err != nil {
-		slog.Error("failed to campaign", "error", err)
+		m.logger.Error("failed to campaign", "error", err)
 		return err
 	}
 	resp, err := election.Leader(ctx)
@@ -355,7 +355,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 	for i := 0; i < total; i++ {
 		taskWorker, _, ok := priorityQueue.Pop()
 		if !ok {
-			slog.Error("unexpected error while dequeue")
+			m.logger.Error("unexpected error while dequeue")
 			break
 		}
 		taskObj := taskWorker.Task
@@ -368,7 +368,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		m.logger.Info("put the task to worker", "taskKey", taskKey, "priority", taskObj.P, "worker", taskWorker.worker)
+		m.logger.Info("assign task", "taskKey", taskKey, "priority", taskObj.P, "worker", taskWorker.worker)
 		assignCount++
 	}
 	if priorityQueue.Size() != 0 {
@@ -392,14 +392,14 @@ func (m *Master) watchSchedule(ctx context.Context) error {
 	} else {
 		err := m.gotoBarrier(ctx)
 		if err != nil {
-			slog.Error("failed to gotoBarrier", "error", err)
+			m.logger.Error("failed to gotoBarrier", "error", err)
 		}
 	}
 
 	m.NotifySchedule(ReasonFirstSchedule)
 	resp, err = m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
-		slog.Error("get worker job list failed.", "error", err)
+		m.logger.Error("get worker job list failed.", "error", err)
 		return err
 	}
 	period := time.NewTicker(m.config.Interval)
@@ -450,10 +450,10 @@ func (m *Master) gotoBarrier(ctx context.Context) error {
 	statusKey := GetWorkerBarrierLeftKey(m.RootName)
 	txnResp, err := m.client.Txn(ctx).If(clientv3util.KeyMissing(statusKey)).Then(clientv3.OpPut(statusKey, time.Now().Format(time.RFC3339))).Commit()
 	if err != nil {
-		slog.Error("failed to set barrier left", "error", err)
+		m.logger.Error("failed to set barrier left", "error", err)
 		return err
 	}
-	slog.Info("scheduler set once schedule status done", "key", statusKey, "Succeeded", txnResp.Succeeded)
+	m.logger.Info("scheduler set once schedule status done", "key", statusKey, "Succeeded", txnResp.Succeeded)
 	return nil
 }
 
