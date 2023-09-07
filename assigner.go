@@ -15,6 +15,7 @@ type Assigner struct {
 	workerList   []string
 	hashBalancer balancer.Balancer
 	leastLoadMap map[string]balancer.Balancer // each group is given a least-load balancer.
+	logger       *slog.Logger
 }
 
 func (a *Assigner) getRandWorkers() []string {
@@ -95,7 +96,9 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			taskNotHash[value.Group]++
 		}
 	}
-	slog.Info("taskNotHash group", "group", taskNotHash)
+	if a.logger != nil {
+		a.logger.Info("taskNotHash group", "group", taskNotHash)
+	}
 
 	for _, kvPair := range taskPathResp {
 
@@ -109,7 +112,9 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		var task string
 		task, err = parseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
 		if err != nil {
-			slog.Debug("delete task because failed to ParseTaskFromTaskKey", "task", string(kvPair.Key))
+			if a.logger != nil {
+				a.logger.Error("delete task because failed to ParseTaskFromTaskKey", "task", string(kvPair.Key))
+			}
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			continue
 		}
@@ -117,7 +122,9 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			slog.Info("delete task because the invalid task existed in valid worker", "task", string(kvPair.Key))
+			if a.logger != nil {
+				a.logger.Info("delete task because the invalid task existed in valid worker", "task", string(kvPair.Key))
+			}
 			continue
 		}
 		avgWorkLoad := taskNotHash[taskObj.Group] / float64(len(workerList))
@@ -125,14 +132,13 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		if avgWorkLoad > 0 && float64(stickyLoad)-avgWorkLoad > 0 {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			slog.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", "task", string(kvPair.Key), "load", stickyLoad, "avg", avgWorkLoad)
+			if a.logger != nil {
+				a.logger.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", "task", string(kvPair.Key), "load", stickyLoad, "avg", avgWorkLoad)
+			}
 		} else {
 			// this valid task is existed in valid worker, so just do it, and give up being re-balance
 			delete(taskMap, string(task))
 			if len(taskObj.Key) == 0 {
-				if taskObj.Group == "C" {
-					slog.Info("")
-				}
 				leastLoadBalancer, err = a.GetBalancer(taskObj.Key, taskObj.Group)
 				if err != nil {
 					return
@@ -154,8 +160,9 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			if err != nil {
 				return
 			}
-			slog.Info("assign the task to target worker", "group", taskObj.Group, "taskID", taskObj.ID, "worker", workerKey)
-
+			if a.logger != nil {
+				a.logger.Info("assign the task to target worker", "group", taskObj.Group, "taskID", taskObj.ID, "worker", workerKey)
+			}
 			leastLoadBalancer.Inc(workerKey)
 			assignMap[workerKey] = append(assignMap[workerKey], taskObj)
 			continue

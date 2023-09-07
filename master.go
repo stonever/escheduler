@@ -84,7 +84,10 @@ func NewMaster(config MasterConfig, node Node) (Master, error) {
 		scheduleReqChan: make(chan string, 1),
 		logger:          slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("master", node.Name),
 	}
-	master.assigner.rootName = master.RootName
+	{
+		master.assigner.rootName = master.RootName
+		master.assigner.logger = master.logger
+	}
 	master.ctx, master.cancel = context.WithCancel(context.Background())
 	// pass worker's ctx to client
 	node.EtcdConfig.Context = master.ctx
