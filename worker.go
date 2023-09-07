@@ -3,20 +3,19 @@ package escheduler
 import (
 	"context"
 	"encoding/json"
-	"go.uber.org/atomic"
+	"os"
 	"path"
 	"time"
 
-	"golang.org/x/exp/slog"
-
-	"github.com/sourcegraph/conc"
+	"log/slog"
 
 	"github.com/pkg/errors"
+	"github.com/sourcegraph/conc"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
-	"go.uber.org/zap"
+	"go.uber.org/atomic"
 )
 
 const (
@@ -56,21 +55,6 @@ func (t TaskChange) DeletedTask() (string, bool) {
 	return "", false
 }
 
-//// Worker instances are used to handle individual task.
-//// It also provides hooks for your worker session life-cycle and allow you to
-//// trigger logic before or after the worker loop(s).
-////
-//// PLEASE NOTE that handlers are likely be called from several goroutines concurrently,
-//// ensure that all state is safely protected against race conditions.
-//type Worker interface {
-//	Start() // Start is run at the beginning of a new session, before ConsumeClaim.
-//	Stop()
-//	Status() int32
-//	Tasks(ctx context.Context) (map[string]struct{}, error)
-//	WatchTask() <-chan WatchEvent
-//	TryLeaveBarrier() error
-//}
-
 type Worker struct {
 	Node
 
@@ -87,6 +71,7 @@ type Worker struct {
 	// goroutine control
 	ctx    context.Context
 	cancel context.CancelFunc
+	logger *slog.Logger
 }
 
 func (w *Worker) Tasks(ctx context.Context) (map[string]struct{}, error) {
@@ -134,7 +119,7 @@ func (w *Worker) keepOnline() {
 
 		}
 		err := w.register()
-		slog.Error("failed to register worker", zap.String("worker name", w.Name), zap.Error(err))
+		w.logger.ErrorContext(w.ctx, "failed to register worker", "error ", err)
 		time.Sleep(time.Second)
 	}
 }
@@ -155,7 +140,7 @@ func (w *Worker) IsAllRunning() bool {
 func (w *Worker) SetStatus(status string) {
 
 	old := w.status.Swap(status)
-	slog.Info("worker status changed", "new", status, "old", old)
+	w.logger.Info("worker status changed", "new", status, "old", old)
 }
 func (w *Worker) Start() {
 	var (
@@ -187,11 +172,11 @@ func (w *Worker) Start() {
 	for status := ""; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
 		time.Sleep(time.Second)
 	}
-	slog.Info("all workers have been in double Barrier, begin to watch my own task path", w.Name)
+	w.logger.Info("all workers have been in double Barrier, begin to watch my own task path", w.Name)
 	wg.Go(func() {
 		err := w.watch()
 		if err != nil {
-			slog.Error("worker watch error", err)
+			w.logger.Error("worker watch error", err)
 		}
 	})
 	return
@@ -200,19 +185,19 @@ func (w *Worker) tryToBarrier() {
 	leftBarrierKey := GetWorkerBarrierLeftKey(w.RootName)
 	ctx := w.ctx
 	if resp, _ := w.client.KV.Get(ctx, leftBarrierKey); len(resp.Kvs) > 0 {
-		slog.Info("no need to enter barrier", w.Name, resp.Kvs[0].String())
+		w.logger.Info("no need to enter barrier", w.Name, resp.Kvs[0].String())
 		w.SetStatus(WorkerStatusLeftBarrier)
 		return
 	}
 	err := w.gotoBarrier(ctx)
 	if err != nil {
-		slog.Error("failed to gotoBarrier", "error", err)
+		w.logger.Error("failed to gotoBarrier", "error", err)
 	}
 }
 func (w *Worker) gotoBarrier(ctx context.Context) error {
 	num := w.MaxNumNodes
 	barrier := GetWorkerBarrierName(w.RootName)
-	slog.Info("enter the barrier...", "worker", w.Name, "barrier_key", barrier)
+	w.logger.Info("enter the barrier...", "worker", w.Name, "barrier_key", barrier)
 	s, err := concurrency.NewSession(w.client)
 	if err != nil {
 		return err
@@ -280,7 +265,7 @@ func (w *Worker) watch() error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			slog.Info("check watcher live", zap.Bool("blocking", watcher.blocking))
+			w.logger.Info("check watcher live", "is_blocking", watcher.blocking)
 		case event, ok := <-watcher.EventChan:
 			if !ok {
 				return errors.Errorf("watcher stopped")
@@ -291,7 +276,7 @@ func (w *Worker) watch() error {
 				// id = kvPair.Key
 				task, err := parseTaskFromValue(event.Kv.Value)
 				if err != nil {
-					slog.Error("[watch] failed to parse created task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
+					w.logger.Error("[watch] failed to parse created task", "key", event.Kv.Key, "value", event.Kv.Value, "error", err)
 					continue
 				}
 				w.Add(task)
@@ -300,12 +285,12 @@ func (w *Worker) watch() error {
 				// id = kvPair.Key
 				taskID, err := parseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
 				if err != nil {
-					slog.Error("[watch] failed to parse deleted task", zap.ByteString("key", event.Kv.Key), zap.ByteString("value", event.Kv.Value), zap.Error(err))
+					w.logger.Error("[watch] failed to parse deleted task", "key", event.Kv.Key, "value", event.Kv.Value, "error", err)
 					continue
 				}
 				w.Del(taskID)
 			default:
-				slog.Warn("[watch] unsupported event case:%s", zap.Any("event", event.Type))
+				w.logger.Warn("[watch] unsupported event case:%s", "event", event.Type)
 			}
 
 		}
@@ -324,6 +309,7 @@ func NewWorker(node Node) (*Worker, error) {
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
 		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",
 		leavingBarrier: make(chan struct{}, 1),
+		logger:         slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("worker", node.Name),
 	}
 	worker.SetStatus(WorkerStatusNew)
 	worker.ctx, worker.cancel = context.WithCancel(context.Background())
@@ -368,7 +354,7 @@ func (w *Worker) register() error {
 		return errors.Wrapf(ErrWorkerNumExceedMaximum, "now worker total is %d >= max is %d", len(resp.Kvs), w.MaxNumNodes-1)
 	}
 	// 创建租约
-	leaseResp, err := w.client.Lease.Grant(ctx, w.TTL)
+	leaseResp, err := w.client.Grant(ctx, w.TTL)
 	if err != nil {
 		err = errors.Wrapf(err, "create worker alive lease error")
 		return err
@@ -378,7 +364,7 @@ func (w *Worker) register() error {
 	if err != nil {
 		return err
 	}
-	keepRespChan, err := w.client.Lease.KeepAlive(ctx, leaseResp.ID)
+	keepAlive, err := w.client.Lease.KeepAlive(ctx, leaseResp.ID)
 	if err != nil {
 		return err
 	}
@@ -390,22 +376,23 @@ func (w *Worker) register() error {
 	}
 	watchStartRevision := putResp.Header.Revision + 1
 	watchChan := w.client.Watch(ctx, workerKey, clientv3.WithRev(watchStartRevision))
-	slog.Info("succeeded to register worker", workerKey, w.TTL)
+	w.logger.Info("succeeded to register worker", workerKey, w.TTL)
 	w.SetStatus(WorkerStatusRegistered)
 	ticker := time.NewTicker(time.Minute * 10)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			slog.Info("worker is alive", zap.String("worker key", workerKey))
-		case msg, ok := <-keepRespChan:
+			w.logger.Info("worker is alive", "worker key", workerKey)
+		case _, ok := <-keepAlive:
+			// keep the lease alive until client error or cancelled context
 			// closed keepRespChan  can be a fatal error,other error should only be logged
 			if !ok {
-				return errors.Errorf("keepRespChan is closed,the worker has been lost,last msg:%s", msg)
+				return errors.Errorf("keepRespChan is closed,the worker has been lost")
 			}
 		case resp, ok := <-watchChan:
 			if !ok {
-				slog.Warn("watchChan is closed,the worker may be lost", resp.Err())
+				w.logger.Warn("watchChan is closed,the worker may be lost", resp.Err())
 				// If the requested revision is 0 or unspecified, the returned channel will
 				// return watch events that happen after the server receives the watch request.
 				watchChan = w.client.Watch(ctx, workerKey)
@@ -413,18 +400,18 @@ func (w *Worker) register() error {
 			}
 			if resp.Canceled || resp.Err() != nil {
 				// for example,if etcd node restart, resp will raise error, mvcc: requested revision has been compacted
-				slog.Error("watchChan resp error", "Canceled", resp.Canceled, "error", resp.Err(), "resp", resp)
+				w.logger.Error("watchChan resp error", "Canceled", resp.Canceled, "error", resp.Err(), "resp", resp)
 				watchChan = w.client.Watch(ctx, workerKey)
 				continue
 			}
 			for _, watchEvent := range resp.Events {
 				if watchEvent.IsCreate() {
-					slog.Info("worker watch event: create")
+					w.logger.Info("worker watch event: create")
 					continue
 				}
 				if watchEvent.Type == mvccpb.DELETE {
-					slog.Info("worker watch event: delete")
-					return errors.Errorf("worker key has been delete,the worker has been lost")
+					w.logger.Info("worker watch event: delete")
+					return errors.Errorf("worker key has been delete,the worker has been deleted")
 				}
 			}
 		}

@@ -14,8 +14,6 @@ require (
 	go.etcd.io/etcd/api/v3 v3.5.9
 	go.etcd.io/etcd/client/v3 v3.5.9
 	go.uber.org/atomic v1.11.0
-	go.uber.org/zap v1.25.0
-	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1
 )
 
 require (
@@ -34,6 +32,8 @@ require (
 	github.com/starwander/GoFibonacciHeap v0.0.0-20190508061137-ba2e4f01000a // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.9 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	go.uber.org/zap v1.25.0 // indirect
+	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1 // indirect
 	golang.org/x/net v0.14.0 // indirect
 	golang.org/x/sys v0.11.0 // indirect
 	golang.org/x/text v0.12.0 // indirect

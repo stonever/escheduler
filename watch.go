@@ -2,15 +2,14 @@ package escheduler
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"time"
-
-	"golang.org/x/exp/slog"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/zap"
 )
 
 type Watcher struct {
@@ -21,6 +20,7 @@ type Watcher struct {
 	incipientRevision int64              // initial revision
 	IncipientKVs      []*mvccpb.KeyValue // initial kv with prefix
 	blocking          bool               // check if event channel blocking
+	logger            *slog.Logger
 }
 
 // NewWatcher
@@ -40,6 +40,7 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 		EventChan:         eventChan,
 		incipientRevision: resp.Header.Revision,
 		IncipientKVs:      resp.Kvs,
+		logger:            slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("watcher", pathPrefix),
 	}
 
 	w.revision = resp.Header.Revision + 1
@@ -48,30 +49,30 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 		for {
 			select {
 			case <-ctx.Done():
-				slog.Info("ctx done. stop watcher", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+				w.logger.Info("ctx done. stop watcher", "prefix", pathPrefix, "revision", w.revision)
 				close(eventChan)
 				return
 			default:
 
 			}
 			rch := client.Watch(ctx, pathPrefix, clientv3.WithPrefix(), clientv3.WithCreatedNotify(), clientv3.WithRev(w.revision))
-			slog.Info("start watcher...", "prefix", pathPrefix, "revision", w.revision)
+			w.logger.Info("start watcher...", "prefix", pathPrefix, "revision", w.revision)
 			//if ctx done, rch will be closed, for loop will end
 			for n := range rch {
 				if n.Created {
-					slog.Info("watcher created")
+					w.logger.Info("watcher created")
 				}
 				// 一般情况下，协程的逻辑会阻塞在此
 				if n.CompactRevision > w.revision {
 					w.revision = n.CompactRevision
-					slog.Info("set revision to CompactRevision", zap.Int64("new revision", w.revision))
+					w.logger.Info("set revision to CompactRevision", "new revision", w.revision)
 				}
 				// 是否需要更新当前的最新的 revision
 				if n.Header.GetRevision() > w.revision {
 					w.revision = n.Header.GetRevision()
 				}
 				if err := n.Err(); err != nil {
-					slog.Error("watcher response error", zap.String("response", spew.Sdump(n)))
+					w.logger.Error("watcher response error", "response", spew.Sdump(n))
 					break
 				}
 				for _, ev := range n.Events {
@@ -81,7 +82,7 @@ func NewWatcher(ctx context.Context, client *clientv3.Client, pathPrefix string)
 				}
 			}
 			time.Sleep(time.Second)
-			slog.Info("watcher need to restart", zap.String("prefix", pathPrefix), zap.Int64("revision", w.revision))
+			w.logger.Info("watcher need to restart", "prefix", pathPrefix, "revision", w.revision)
 		}
 	}()
 

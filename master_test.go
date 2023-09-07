@@ -3,12 +3,11 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/exp/slog"
 
 	"github.com/stretchr/testify/assert"
 
@@ -16,7 +15,6 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
-	"go.uber.org/zap"
 )
 
 func TestStopScheduler(t *testing.T) {
@@ -88,7 +86,7 @@ func newMaster(rootName string, name string, num int) (worker *Worker, master Ma
 		worker.Start()
 
 		for v := range worker.WatchTask() {
-			slog.Info("receive", zap.Any("v", v))
+			slog.Info("receive", "v", v)
 		}
 	}()
 	var err error
@@ -247,7 +245,7 @@ func TestHashBalancer(t *testing.T) {
 		go worker.Start()
 
 		for v := range worker.WatchTask() {
-			slog.Info("receive", zap.Any("v", v))
+			slog.Info("receive", "v", v)
 		}
 		worker.TryLeaveBarrier(time.Second)
 
@@ -263,7 +261,7 @@ func TestHashBalancer(t *testing.T) {
 		worker.Start()
 
 		for v := range worker.WatchTask() {
-			slog.Info("receive", zap.Any("v", v))
+			slog.Info("receive", "v", v)
 		}
 	}()
 	sc, err := NewMaster(schedConfig, node)

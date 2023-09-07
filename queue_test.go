@@ -1,14 +1,13 @@
 package escheduler
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
-	"go.uber.org/zap"
-	"golang.org/x/exp/slog"
 )
 
 func TestQueueSamePriorityFIFO(t *testing.T) {
@@ -60,7 +59,7 @@ func TestQueueSamePriorityFIFO(t *testing.T) {
 			t.Fatal(err)
 			return
 		}
-		slog.Info("接收值:", zap.Any("received", res))
+		slog.Info("接收值:", "received", res)
 
 		if i == 0 {
 			Convey("first must be binance ", t, func() {

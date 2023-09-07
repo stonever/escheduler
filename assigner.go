@@ -1,13 +1,12 @@
 package escheduler
 
 import (
+	"log/slog"
 	"path"
 	"sync"
 
 	"github.com/stonever/balancer/balancer"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"go.uber.org/zap"
-	"golang.org/x/exp/slog"
 )
 
 type Assigner struct {
@@ -96,7 +95,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			taskNotHash[value.Group]++
 		}
 	}
-	slog.Info("taskNotHash group", zap.Any("group", taskNotHash))
+	slog.Info("taskNotHash group", "group", taskNotHash)
 
 	for _, kvPair := range taskPathResp {
 
@@ -110,7 +109,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		var task string
 		task, err = parseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
 		if err != nil {
-			slog.Debug("delete task because failed to ParseTaskFromTaskKey", zap.String("task", string(kvPair.Key)))
+			slog.Debug("delete task because failed to ParseTaskFromTaskKey", "task", string(kvPair.Key))
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
 			continue
 		}
@@ -118,7 +117,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		if !ok {
 			// the invalid task existed in valid worker, so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			slog.Info("delete task because the invalid task existed in valid worker", zap.String("task", string(kvPair.Key)))
+			slog.Info("delete task because the invalid task existed in valid worker", "task", string(kvPair.Key))
 			continue
 		}
 		avgWorkLoad := taskNotHash[taskObj.Group] / float64(len(workerList))
@@ -126,7 +125,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 		if avgWorkLoad > 0 && float64(stickyLoad)-avgWorkLoad > 0 {
 			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
 			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			slog.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", zap.String("task", string(kvPair.Key)), zap.Uint64("load", stickyLoad), zap.Float64("avg", avgWorkLoad))
+			slog.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", "task", string(kvPair.Key), "load", stickyLoad, "avg", avgWorkLoad)
 		} else {
 			// this valid task is existed in valid worker, so just do it, and give up being re-balance
 			delete(taskMap, string(task))
@@ -155,7 +154,7 @@ func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Ta
 			if err != nil {
 				return
 			}
-			slog.Info("assign the task to target worker", zap.String("group", taskObj.Group), zap.String("taskID", taskObj.ID), zap.String("worker", workerKey))
+			slog.Info("assign the task to target worker", "group", taskObj.Group, "taskID", taskObj.ID, "worker", workerKey)
 
 			leastLoadBalancer.Inc(workerKey)
 			assignMap[workerKey] = append(assignMap[workerKey], taskObj)
