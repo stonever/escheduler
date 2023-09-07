@@ -14,6 +14,7 @@ require (
 	go.etcd.io/etcd/api/v3 v3.5.9
 	go.etcd.io/etcd/client/v3 v3.5.9
 	go.uber.org/atomic v1.11.0
+	go.uber.org/goleak v1.2.0
 )
 
 require (

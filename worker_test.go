@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/sourcegraph/conc"
 	"github.com/stretchr/testify/assert"
 
@@ -304,6 +306,7 @@ func TestWorkerStatusDead(t *testing.T) {
 	}
 }
 func TestWorkerGetAllTask(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
@@ -377,6 +380,7 @@ func TestWorkerGetAllTask(t *testing.T) {
 
 }
 func TestWorkerRegister(t *testing.T) {
+	defer goleak.VerifyNone(t)
 
 	rootName := "escheduler" + strconv.Itoa(int(time.Now().Unix()))
 

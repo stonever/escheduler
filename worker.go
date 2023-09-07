@@ -172,7 +172,7 @@ func (w *Worker) Start() {
 	for status := ""; status != WorkerStatusInBarrier && status != WorkerStatusLeftBarrier; status = w.Status() {
 		time.Sleep(time.Second)
 	}
-	w.logger.Info("all workers have been in double Barrier, begin to watch my own task path", w.Name)
+	w.logger.Info("all workers have been in double Barrier, begin to watch my own task path")
 	wg.Go(func() {
 		err := w.watch()
 		if err != nil {
@@ -229,6 +229,7 @@ func (w *Worker) key() string {
 }
 func (w *Worker) Stop() {
 	w.SetStatus(WorkerStatusDead)
+	w.cancel()
 	_ = w.client.Close()
 }
 func (w *Worker) Add(task Task) {
@@ -309,7 +310,8 @@ func NewWorker(node Node) (*Worker, error) {
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
 		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",
 		leavingBarrier: make(chan struct{}, 1),
-		logger:         slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("worker", node.Name),
+		logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})).
+			With("logger", "esched").With("worker", node.Name),
 	}
 	worker.SetStatus(WorkerStatusNew)
 	worker.ctx, worker.cancel = context.WithCancel(context.Background())

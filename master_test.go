@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stonever/balancer/balancer"
@@ -18,6 +20,7 @@ import (
 )
 
 func TestStopScheduler(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	node := Node{
 		EtcdConfig: clientv3.Config{
 			Endpoints:   []string{"127.0.0.1:2379"},
@@ -40,11 +43,10 @@ func TestStopScheduler(t *testing.T) {
 		panic(err.Error())
 	}
 	go func() {
-		time.Sleep(time.Second * 30)
+		time.Sleep(time.Second * 5)
 		sc.Stop()
 	}()
 	sc.Start()
-
 }
 func TestMultiMaster(t *testing.T) {
 	var wg sync.WaitGroup
@@ -58,7 +60,7 @@ func TestMultiMaster(t *testing.T) {
 	}
 	wg.Wait()
 }
-func newMaster(rootName string, name string, num int) (worker *Worker, master Master) {
+func newMaster(rootName string, name string, num int) (worker *Worker, master *Master) {
 	maxNum := num + 1
 	node := Node{
 		EtcdConfig: clientv3.Config{

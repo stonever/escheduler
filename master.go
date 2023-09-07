@@ -40,7 +40,7 @@ func (sc MasterConfig) Validation() error {
 	return nil
 }
 
-type master struct {
+type Master struct {
 	Node
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -57,7 +57,7 @@ type master struct {
 	logger     *slog.Logger
 }
 
-func (m *master) NotifySchedule(request string) {
+func (m *Master) NotifySchedule(request string) {
 	select {
 	case m.scheduleReqChan <- request:
 		m.logger.Debug("sent schedule request", "request", request)
@@ -67,7 +67,7 @@ func (m *master) NotifySchedule(request string) {
 }
 
 // NewMaster create a scheduler
-func NewMaster(config MasterConfig, node Node) (Master, error) {
+func NewMaster(config MasterConfig, node Node) (*Master, error) {
 	err := config.Validation()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to validate config")
@@ -77,12 +77,13 @@ func NewMaster(config MasterConfig, node Node) (Master, error) {
 		return nil, errors.Wrapf(err, "failed to validate node")
 	}
 
-	master := master{
+	master := &Master{
 		Node:            node,
 		config:          config,
 		workerPath:      path.Join("/", node.RootName, workerFolder) + "/",
 		scheduleReqChan: make(chan string, 1),
-		logger:          slog.New(slog.NewJSONHandler(os.Stderr, nil)).With("master", node.Name),
+		logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})).
+			With("logger", "esched").With("master", node.Name),
 	}
 	{
 		master.assigner.rootName = master.RootName
@@ -96,23 +97,17 @@ func NewMaster(config MasterConfig, node Node) (Master, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &master, nil
+	return master, nil
 }
 
-type Master interface {
-	Start()
-	NotifySchedule(string)
-	Stop()
-}
-
-func (s *master) ElectionKey() string {
+func (s *Master) ElectionKey() string {
 	return path.Join("/"+s.RootName, electionFolder)
 }
 
 // Start The endless loop is for trying to election.
 // lifecycle 1. if outer ctx done, scheduler done
 // 2. if leader changed to the other, leader ctx done
-func (m *master) Start() {
+func (m *Master) Start() {
 	var (
 		d = time.Second
 	)
@@ -127,8 +122,9 @@ func (m *master) Start() {
 		time.Sleep(d)
 	}
 }
-func (m *master) Stop() {
+func (m *Master) Stop() {
 	m.cancel()
+	m.client.Close()
 }
 
 // Campaign
@@ -138,7 +134,7 @@ func (m *master) Stop() {
 //	@receiver s
 //	@param ctx
 //	@return error
-func (m *master) Campaign(ctx context.Context) (err error) {
+func (m *Master) Campaign(ctx context.Context) (err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(err) // err 可能是nil也可能被赋值了
 
@@ -213,11 +209,11 @@ func (m *master) Campaign(ctx context.Context) (err error) {
 type Generator func(ctx context.Context) ([]Task, error)
 
 // taskPath return for example: /20220624/task
-func (s *master) taskPath() string {
+func (s *Master) taskPath() string {
 	return path.Join("/"+s.RootName, taskFolder)
 }
 
-func (m *master) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
+func (m *Master) onlineWorkerList(ctx context.Context) (workersWithJob []string, err error) {
 	resp, err := m.client.KV.Get(ctx, m.workerPath, clientv3.WithPrefix())
 	if err != nil {
 		return
@@ -233,7 +229,7 @@ func (m *master) onlineWorkerList(ctx context.Context) (workersWithJob []string,
 	}
 	return workers, nil
 }
-func (s *master) workerList(ctx context.Context) (workersWithJob map[string][]RawData, err error) {
+func (s *Master) workerList(ctx context.Context) (workersWithJob map[string][]RawData, err error) {
 	workersWithJob = make(map[string][]RawData)
 	resp, err := s.client.KV.Get(ctx, s.workerPath, clientv3.WithPrefix())
 	if err != nil {
@@ -255,7 +251,7 @@ func (s *master) workerList(ctx context.Context) (workersWithJob map[string][]Ra
 	return workersWithJob, nil
 }
 
-func (m *master) handleScheduleRequest(ctx context.Context) error {
+func (m *Master) handleScheduleRequest(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -288,7 +284,7 @@ func (m *master) handleScheduleRequest(ctx context.Context) error {
 	}
 }
 
-func (m *master) doSchedule(ctx context.Context) error {
+func (m *Master) doSchedule(ctx context.Context) error {
 	// query all online worker in etcd
 	workerList, err := m.onlineWorkerList(ctx)
 	if err != nil {
@@ -384,7 +380,7 @@ func (m *master) doSchedule(ctx context.Context) error {
 
 // watch :1. watch worker changed and notify schedule
 // 2. periodically  notify schedule
-func (m *master) watchSchedule(ctx context.Context) error {
+func (m *Master) watchSchedule(ctx context.Context) error {
 	key := GetWorkerBarrierLeftKey(m.RootName)
 	resp, err := m.client.KV.Get(ctx, key)
 	if err != nil {
@@ -433,7 +429,7 @@ func (m *master) watchSchedule(ctx context.Context) error {
 	}
 }
 
-func (m *master) gotoBarrier(ctx context.Context) error {
+func (m *Master) gotoBarrier(ctx context.Context) error {
 	barrierKey := GetWorkerBarrierName(m.RootName)
 	m.logger.Info("try to enter the barrier", "barrier_key", barrierKey)
 	session, err := concurrency.NewSession(m.client)
