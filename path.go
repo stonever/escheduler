@@ -2,12 +2,30 @@ package escheduler
 
 import (
 	"encoding/json"
+	"path"
 	"strings"
 
 	"github.com/pkg/errors"
 )
 
-func parseTaskFromValue(value []byte) (task Task, err error) {
+func NewPathParser(rootName string) *pathParser {
+	return &pathParser{rootName: rootName}
+}
+
+type pathParser struct {
+	rootName string
+}
+
+func (p pathParser) EncodeTaskFolderKey(worker string) string {
+	taskFolderKey := path.Join("/"+p.rootName, taskFolder, worker)
+	return taskFolderKey
+}
+func (p pathParser) EncodeTaskKey(worker, taskID string) string {
+	taskPath := path.Join("/"+p.rootName, taskFolder)
+	return path.Join(taskPath, worker, taskID)
+}
+
+func (p pathParser) parseTaskFromValue(value []byte) (task Task, err error) {
 	err = json.Unmarshal(value, &task)
 	return
 }
@@ -19,10 +37,10 @@ func parseTaskFromValue(value []byte) (task Task, err error) {
 //	@param key
 //	@return string
 //	@return error
-func parseTaskIDFromTaskKey(rootName, key string) (string, error) {
+func (p pathParser) parseTaskIDFromTaskKey(key string) (string, error) {
 	// key is /root/task/192.168.193.131-125075/10
 	// change to task/192.168.193.131-125075/10
-	key = strings.Replace(key, "/"+rootName+"/", "", 1)
+	key = strings.Replace(key, "/"+p.rootName+"/", "", 1)
 	expected := 3
 	arr := strings.SplitAfterN(key, "/", expected)
 	if len(arr) < expected { // should be 3
@@ -38,7 +56,8 @@ func parseTaskIDFromTaskKey(rootName, key string) (string, error) {
 //	@param key
 //	@return string
 //	@return error
-func parseWorkerIDFromWorkerKey(rootName, key string) (string, error) {
+func (p pathParser) parseWorkerIDFromWorkerKey(key string) (string, error) {
+	rootName := p.rootName
 	// key is /root/worker/mq455
 	// change to worker/mq455
 	key = strings.Replace(key, "/"+rootName+"/", "", 1)
@@ -56,7 +75,9 @@ func parseWorkerIDFromWorkerKey(rootName, key string) (string, error) {
 //	@param rootName, like root
 //	@param key like /root/task/192.168.193.131-28682/raw data for task 10
 //	@return string 192.168.193.131-28682
-func parseWorkerIDFromTaskKey(rootName, key string) (string, error) {
+func (p pathParser) parseWorkerIDFromTaskKey(key string) (string, error) {
+	rootName := p.rootName
+
 	key = strings.Replace(key, "/"+rootName+"/", "", 1)
 	expected := 3
 	arr := strings.SplitN(key, "/", expected)

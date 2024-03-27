@@ -57,7 +57,7 @@ func (t TaskChange) DeletedTask() (string, bool) {
 
 type Worker struct {
 	Node
-
+	ps *pathParser
 	// path
 	workerPath string // eg. /20220624/worker/
 	taskChan   chan WatchEvent
@@ -82,7 +82,7 @@ func (w *Worker) Tasks(ctx context.Context) (map[string]struct{}, error) {
 		return nil, errors.Wrapf(err, "failed to get etcd kv")
 	}
 	for _, value := range resp.Kvs {
-		abbr, err := parseTaskIDFromTaskKey(w.RootName, string(value.Key))
+		abbr, err := w.ps.parseTaskIDFromTaskKey(string(value.Key))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse abbr:%s", value.Key)
 		}
@@ -251,7 +251,7 @@ func (w *Worker) watch() error {
 	// add existed task
 	for _, kvPair := range watcher.IncipientKVs {
 		// id = kvPair.Key
-		task, err := parseTaskFromValue(kvPair.Value)
+		task, err := w.ps.parseTaskFromValue(kvPair.Value)
 		if err != nil {
 			err = errors.Wrapf(err, "Unmarshal task key:%s", kvPair.Key)
 			return err
@@ -275,7 +275,7 @@ func (w *Worker) watch() error {
 			case mvccpb.PUT:
 				// 任务新建事件
 				// id = kvPair.Key
-				task, err := parseTaskFromValue(event.Kv.Value)
+				task, err := w.ps.parseTaskFromValue(event.Kv.Value)
 				if err != nil {
 					w.logger.Error("[watch] failed to parse created task", "key", event.Kv.Key, "value", event.Kv.Value, "error", err)
 					continue
@@ -284,7 +284,7 @@ func (w *Worker) watch() error {
 			case mvccpb.DELETE:
 				// 任务delete event
 				// id = kvPair.Key
-				taskID, err := parseTaskIDFromTaskKey(w.RootName, string(event.Kv.Key))
+				taskID, err := w.ps.parseTaskIDFromTaskKey(string(event.Kv.Key))
 				if err != nil {
 					w.logger.Error("[watch] failed to parse deleted task", "key", event.Kv.Key, "value", event.Kv.Value, "error", err)
 					continue
@@ -306,6 +306,7 @@ func NewWorker(node Node) (*Worker, error) {
 	}
 
 	worker := Worker{
+		ps:             NewPathParser(node.RootName),
 		Node:           node,
 		workerPath:     path.Join("/", node.RootName, workerFolder) + "/",
 		taskPath:       path.Join("/", node.RootName, taskFolder, node.Name) + "/",

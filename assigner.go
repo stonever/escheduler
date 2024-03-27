@@ -2,70 +2,37 @@ package escheduler
 
 import (
 	"log/slog"
-	"path"
 	"sync"
 
-	"github.com/stonever/balancer/balancer"
-	"go.etcd.io/etcd/api/v3/mvccpb"
+	"github.com/elliotchance/pie/v2"
+	"github.com/pkg/errors"
 )
+
+func NewAssigner() *Assigner {
+	return &Assigner{
+		ring: NewHashRing(10000, nil),
+	}
+}
 
 type Assigner struct {
 	sync.Mutex
-	rootName     string
-	workerList   []string
-	hashBalancer balancer.Balancer
-	leastLoadMap map[string]balancer.Balancer // each group is given a least-load balancer.
-	logger       *slog.Logger
+	ring     *HashRing
+	rootName string
+	logger   *slog.Logger
 }
 
-func (a *Assigner) getRandWorkers() []string {
-	return randShuffle[string](a.workerList)
-}
-func (a *Assigner) GetBalancer(key, group string) (balancer.Balancer, error) {
-	a.Lock()
-	defer a.Unlock()
-	if len(key) != 0 {
-		return a.getHashBalancer()
-	}
-
-	return a.getLeastLoadBalancer(group)
-
-}
-func (a *Assigner) getHashBalancer() (balancer.Balancer, error) {
-	var err error
-	if a.hashBalancer == nil {
-		a.hashBalancer, err = balancer.Build(balancer.IPHashBalancer, a.getRandWorkers())
-		if err != nil {
-			return nil, err
+func (a *Assigner) assignToRing(workerList []string, taskMap map[string]Task) (assignMap map[string][]string, err error) {
+	a.ring.Reset(workerList...)
+	assignMap = make(map[string][]string)
+	for taskID, v := range taskMap {
+		keyToRing := getKeyInRing(v)
+		workerKey := a.ring.Get(keyToRing)
+		if len(workerKey) == 0 {
+			return nil, errors.Errorf("failed locate task:%s in ring", v.ID)
 		}
+		assignMap[workerKey] = append(assignMap[workerKey], taskID)
 	}
-	return a.hashBalancer, nil
-}
-func (a *Assigner) getLeastLoadBalancer(group string) (balancer.Balancer, error) {
-	ret, ok := a.leastLoadMap[group]
-	if ok {
-		return ret, nil
-	}
-	if a.leastLoadMap == nil {
-		a.leastLoadMap = make(map[string]balancer.Balancer)
-	}
-	var err error
-	a.leastLoadMap[group], err = balancer.Build(balancer.LeastLoadBalancer, a.getRandWorkers())
-	if err != nil {
-		return nil, err
-	}
-	return a.leastLoadMap[group], nil
-}
-func (a *Assigner) getWorkerLoadByGroup(worker, group string) uint64 {
-	b, err := a.getLeastLoadBalancer(group)
-	if err != nil {
-		return 0
-	}
-	l, ok := b.(*balancer.LeastLoad)
-	if !ok {
-		return 0
-	}
-	return l.Value(worker)
+	return assignMap, nil
 }
 
 // GetReBalanceResult
@@ -73,112 +40,32 @@ func (a *Assigner) getWorkerLoadByGroup(worker, group string) uint64 {
 // taskMap current task collection, key is ID ,value is task
 // taskPathResp current assigned state
 // taskPathResp []kv key: /Root/task/worker-0/task-abbr-1 value: task raw data for task 1
-func (a *Assigner) GetReBalanceResult(workerList []string, taskMap map[string]Task, taskPathResp []*mvccpb.KeyValue) (toDeleteWorkerTaskKey map[string]struct{}, toDeleteTaskKey []string, assignMap map[string][]Task, err error) {
-	a.reset(workerList)
+func (a *Assigner) GetReBalanceResult(workers []string, generatedTaskMap map[string]Task, oldAssignMap map[string][]string) (toDeleteWorkerAllTask []string, toDeleteTask map[string][]string, toAddTask map[string][]string, err error) {
+	_, toDeleteWorkerAllTask = pie.Diff[string](pie.Keys(oldAssignMap), workers)
 
-	var (
-		leastLoadBalancer, hashBalancer balancer.Balancer
-	)
-	// make return params
-	toDeleteTaskKey = make([]string, 0)
-	toDeleteWorkerTaskKey = make(map[string]struct{}, 0)
-	assignMap = make(map[string][]Task)
-
-	workerMap := make(map[string]struct{})
-	for _, value := range workerList {
-		workerMap[value] = struct{}{}
+	newAssignMap, err := a.assignToRing(workers, generatedTaskMap)
+	if err != nil {
+		return
 	}
-	var (
-		taskNotHash = make(map[string]float64)
-	)
-	for _, value := range taskMap {
-		if len(value.Key) == 0 {
-			taskNotHash[value.Group]++
-		}
+	toDeleteTask = make(map[string][]string, 0)
+	toAddTask = make(map[string][]string, 0)
+
+	onlineWorkerMap := make(map[string]struct{})
+	for _, value := range workers {
+		onlineWorkerMap[value] = struct{}{}
 	}
 
-	for _, kvPair := range taskPathResp {
-
-		workerKey, _ := parseWorkerIDFromTaskKey(a.rootName, string(kvPair.Key))
-		_, ok := workerMap[workerKey]
-		if !ok {
-			parentPath := path.Dir(string(kvPair.Key))
-			toDeleteWorkerTaskKey[parentPath] = struct{}{}
-			continue
-		}
-		var task string
-		task, err = parseTaskIDFromTaskKey(a.rootName, string(kvPair.Key))
-		if err != nil {
-			if a.logger != nil {
-				a.logger.Error("delete task because failed to ParseTaskFromTaskKey", "task", string(kvPair.Key))
-			}
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			continue
-		}
-		taskObj, ok := taskMap[string(task)]
-		if !ok {
-			// the invalid task existed in valid worker, so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			if a.logger != nil {
-				a.logger.Info("delete task because the invalid task existed in valid worker", "task", string(kvPair.Key))
-			}
-			continue
-		}
-		avgWorkLoad := taskNotHash[taskObj.Group] / float64(len(workerList))
-		stickyLoad := a.getWorkerLoadByGroup(workerKey, taskObj.Group)
-		if avgWorkLoad > 0 && float64(stickyLoad)-avgWorkLoad > 0 {
-			// the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it
-			toDeleteTaskKey = append(toDeleteTaskKey, string(kvPair.Key))
-			if a.logger != nil {
-				a.logger.Info("delete task because the valid task existed in valid worker, but worker workload is bigger than avg,  so delete it", "task", string(kvPair.Key), "load", stickyLoad, "avg", avgWorkLoad)
-			}
-		} else {
-			// this valid task is existed in valid worker, so just do it, and give up being re-balance
-			delete(taskMap, string(task))
-			if len(taskObj.Key) == 0 {
-				leastLoadBalancer, err = a.GetBalancer(taskObj.Key, taskObj.Group)
-				if err != nil {
-					return
-				}
-				leastLoadBalancer.Inc(workerKey)
-			}
-		}
-	}
-	// taskMap is all tasks, key is task's ID ,value is task
-	for _, taskObj := range taskMap {
-		var workerKey string
-		if len(taskObj.Key) == 0 {
-			leastLoadBalancer, err = a.GetBalancer(taskObj.Key, taskObj.Group)
-			if err != nil {
-				return
-			}
-
-			workerKey, err = leastLoadBalancer.Balance(string(taskObj.ID))
-			if err != nil {
-				return
-			}
-			leastLoadBalancer.Inc(workerKey)
-			assignMap[workerKey] = append(assignMap[workerKey], taskObj)
-			continue
-		}
-		hashBalancer, err = a.GetBalancer(taskObj.Key, taskObj.Group)
-		if err != nil {
-			return
-		}
-		workerKey, err = hashBalancer.Balance(taskObj.Key)
-		if err != nil {
-			return
-		}
-		assignMap[workerKey] = append(assignMap[workerKey], taskObj)
+	for _, workerKey := range workers {
+		added, removed := pie.Diff(oldAssignMap[workerKey], newAssignMap[workerKey])
+		toDeleteTask[workerKey] = append(toDeleteTask[workerKey], removed...)
+		toAddTask[workerKey] = append(toAddTask[workerKey], added...)
 	}
 	return
 }
 
-func (a *Assigner) reset(list []string) {
-	a.Lock()
-	defer a.Unlock()
-
-	a.workerList = list
-	a.leastLoadMap = nil
-	a.hashBalancer = nil
+func getKeyInRing(task Task) string {
+	if task.Key != "" {
+		return (task.Key)
+	}
+	return (task.ID)
 }

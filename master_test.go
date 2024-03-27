@@ -216,18 +216,20 @@ func TestHashBalancer(t *testing.T) {
 			Password:    "password",
 			DialTimeout: 5 * time.Second,
 		},
-		RootName:    "20230109",
+		RootName:    "20230110",
 		TTL:         15,
-		MaxNumNodes: 2,
+		MaxNumNodes: 4,
 	}
 	schedConfig := MasterConfig{
 		Interval: time.Minute,
 		Generator: func(ctx context.Context) (ret []Task, err error) {
-			for i := 0; i < 10; i++ {
+			for i := 0; i < 15; i++ {
 				task := Task{
 					ID:  fmt.Sprintf("%d", i),
 					Raw: []byte(fmt.Sprintf("raw data for task %d %d", i, time.Now().UnixMilli())),
-					Key: "ig",
+				}
+				if i < 5 {
+					task.Key = "ig"
 				}
 				ret = append(ret, task)
 			}
@@ -247,7 +249,7 @@ func TestHashBalancer(t *testing.T) {
 		go worker.Start()
 
 		for v := range worker.WatchTask() {
-			slog.Info("receive", "v", v)
+			worker.logger.Info("receive", "v", v)
 		}
 		worker.TryLeaveBarrier(time.Second)
 
@@ -263,7 +265,21 @@ func TestHashBalancer(t *testing.T) {
 		worker.Start()
 
 		for v := range worker.WatchTask() {
-			slog.Info("receive", "v", v)
+			worker.logger.Info("receive", "v", v)
+		}
+	}()
+	go func() {
+		time.Sleep(time.Second * 60)
+		node.Name = "ccc"
+
+		worker, err := NewWorker(node)
+		if err != nil {
+			panic(err.Error())
+		}
+		worker.Start()
+
+		for v := range worker.WatchTask() {
+			worker.logger.Info("receive", "v", v)
 		}
 	}()
 	sc, err := NewMaster(schedConfig, node)

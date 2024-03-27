@@ -42,6 +42,7 @@ func (sc MasterConfig) Validation() error {
 
 type Master struct {
 	Node
+	ps     *pathParser
 	ctx    context.Context
 	cancel context.CancelFunc
 	config MasterConfig
@@ -53,7 +54,7 @@ type Master struct {
 
 	// path
 	workerPath string
-	assigner   Assigner
+	assigner   *Assigner
 	logger     *slog.Logger
 }
 
@@ -79,11 +80,13 @@ func NewMaster(config MasterConfig, node Node) (*Master, error) {
 
 	master := &Master{
 		Node:            node,
+		ps:              NewPathParser(node.RootName),
 		config:          config,
 		workerPath:      path.Join("/", node.RootName, workerFolder) + "/",
 		scheduleReqChan: make(chan string, 1),
 		logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})).
 			With("logger", "esched").With("master", node.Name),
+		assigner: NewAssigner(),
 	}
 	{
 		master.assigner.rootName = master.RootName
@@ -220,7 +223,7 @@ func (m *Master) onlineWorkerList(ctx context.Context) (workersWithJob []string,
 	}
 	workers := make([]string, 0, len(resp.Kvs))
 	for _, kvPair := range resp.Kvs {
-		worker, err := parseWorkerIDFromWorkerKey(m.RootName, string(kvPair.Key))
+		worker, err := m.ps.parseWorkerIDFromWorkerKey(string(kvPair.Key))
 		if err != nil {
 			m.logger.Error("ParseWorkerFromWorkerKey error", "key", kvPair.Key, "error", err)
 			continue
@@ -260,7 +263,7 @@ func (m *Master) handleScheduleRequest(ctx context.Context) error {
 			return err
 		case reason := <-m.scheduleReqChan:
 			if reason != ReasonFirstSchedule {
-				m.logger.Info("doSchedule wait", "wait", m.config.ReBalanceWait)
+				m.logger.Info("doSchedule ", "wait", m.config.ReBalanceWait, "reason", reason)
 				time.Sleep(m.config.ReBalanceWait)
 			}
 			func() {
@@ -291,65 +294,77 @@ func (m *Master) doSchedule(ctx context.Context) error {
 		m.logger.Error("failed to get leader", "error", err)
 		return err
 	}
-	m.logger.Info("worker total", "count", len(workerList), "array", workerList)
 
 	// start to assign
-	taskList, err := m.config.Generator(ctx)
+	generatedTaskList, err := m.config.Generator(ctx)
 	if err != nil {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
 	}
-	m.logger.Info("succeeded to generate all tasks", "count", len(taskList))
-	taskMap := make(map[string]Task)
-	for _, task := range taskList {
-		taskMap[task.ID] = task
+	m.logger.Info("coolect worker list and task list", "workerLen", len(workerList), "taskLen", len(generatedTaskList), "workerList", workerList)
+
+	generatedTaskMap := make(map[string]Task)
+	for _, task := range generatedTaskList {
+		generatedTaskMap[task.ID] = task
 	}
 
 	if len(workerList) != m.MaxNumNodes-1 {
-		m.logger.Info("worker count not expected", "expected", m.MaxNumNodes-1)
+		m.logger.Warn("worker count not expected", "expected", m.MaxNumNodes-1)
 	}
 	// /20220809/task
 	taskPathResp, err := m.client.KV.Get(ctx, m.taskPath(), clientv3.WithPrefix())
 	if err != nil {
 		return err
 	}
-	if len(workerList) <= 0 {
-		return errors.New("worker count is zero")
-	}
-	m.logger.Info("rebalance workerList", "workerList", workerList)
-
-	toDeleteWorkerTaskKey, toDeleteTaskKey, assignMap, err := m.assigner.GetReBalanceResult(workerList, taskMap, taskPathResp.Kvs)
+	oldAssinMap, err := m.genOldAssignMap(taskPathResp.Kvs)
 	if err != nil {
 		return err
 	}
-	if len(toDeleteWorkerTaskKey) > 0 {
-		m.logger.Info("to delete expired worker's task folder", "len", len(toDeleteWorkerTaskKey))
-		for prefix := range toDeleteWorkerTaskKey {
-			_, err := m.client.KV.Delete(ctx, prefix, clientv3.WithPrefix())
+
+	if len(workerList) <= 0 {
+		return errors.New("worker count is zero")
+	}
+
+	toDeleteWorkerAllTask, toDeleteTask, toAddTask, err := m.assigner.GetReBalanceResult(workerList, generatedTaskMap, oldAssinMap)
+	if err != nil {
+		return err
+	}
+	if len(toDeleteWorkerAllTask) > 0 {
+		for _, workerName := range toDeleteWorkerAllTask {
+			workerTaskFolderKey := m.ps.EncodeTaskFolderKey(workerName)
+			deleted, err := m.client.KV.Delete(ctx, workerTaskFolderKey, clientv3.WithPrefix())
 			if err != nil {
 				return fmt.Errorf("failed to clear task. err:%w", err)
 			}
+			m.logger.Warn("workerTaskFolderKey deleted  ", "key", workerTaskFolderKey, "Deleted", deleted.Deleted)
+
 		}
 	}
-	if len(toDeleteTaskKey) > 0 {
+	if len(toDeleteTask) > 0 {
 		// get incremental tasks
-		m.logger.Info("to delete expired task ", "len", len(toDeleteTaskKey))
-		for _, prefix := range toDeleteTaskKey {
-			_, err := m.client.KV.Delete(ctx, prefix)
-			if err != nil {
-				return fmt.Errorf("failed to clear task. err:%w", err)
+		for workName, tasks := range toDeleteTask {
+			if len(tasks) == 0 {
+				continue
+			}
+			m.logger.Info("to delete a worker's expired task ", "workName", workName, "len", len(toDeleteTask))
+			for _, taskID := range tasks {
+				taskKey := m.ps.EncodeTaskKey(workName, taskID)
+				_, err := m.client.KV.Delete(ctx, taskKey)
+				if err != nil {
+					return fmt.Errorf("failed to clear task. err:%w", err)
+				}
 			}
 		}
 	}
 	total := 0
 	priorityQueue := lane.NewMaxPriorityQueue[WorkerTask, float64]()
-	for worker, arr := range assignMap {
-		for _, taskObj := range arr {
+	for worker, arr := range toAddTask {
+		for _, ids := range arr {
+			taskObj := generatedTaskMap[ids]
 			priorityQueue.Push(WorkerTask{Task: taskObj, worker: worker}, taskObj.P)
 			total++
 		}
 	}
-	m.logger.Info("assignMap total count", "total", total, "queue size", priorityQueue.Size())
 	var assignCount = 0
 
 	for i := 0; i < total; i++ {
@@ -359,7 +374,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 			break
 		}
 		taskObj := taskWorker.Task
-		taskKey := path.Join(m.taskPath(), taskWorker.worker, taskObj.ID)
+		taskKey := m.ps.EncodeTaskKey(taskWorker.worker, taskObj.ID)
 		data, err := json.Marshal(taskObj)
 		if err != nil {
 			return err
@@ -374,8 +389,28 @@ func (m *Master) doSchedule(ctx context.Context) error {
 	if priorityQueue.Size() != 0 {
 		m.logger.Error("priorityQueue should be empty", "actual", priorityQueue.Size())
 	}
-	m.logger.Info("task re-balance result", "created count", assignCount, "toDeleteWorkerTaskKey", toDeleteWorkerTaskKey, "toDeleteTaskKey", toDeleteTaskKey)
+
+	m.logger.Info("ReBalance result", "toAddTask", toAddTask, "toDeleteWorkerTaskKey", toDeleteWorkerAllTask, "toDeleteTaskKey", toDeleteTask)
 	return nil
+}
+
+func (m *Master) genOldAssignMap(taskPathResp []*mvccpb.KeyValue) (map[string][]string, error) {
+	var (
+		ret = make(map[string][]string)
+	)
+	for _, kvPair := range taskPathResp {
+		// Assuming the pod name is kline-flow-65f9d64d4d-2k4kz, the workerKey is 2k4kz
+		workerID, err := m.ps.parseWorkerIDFromTaskKey(string(kvPair.Key))
+		if err != nil {
+			return nil, err
+		}
+		taskID, err := m.ps.parseTaskIDFromTaskKey(string(kvPair.Key))
+		if err != nil {
+			return nil, err
+		}
+		ret[workerID] = append(ret[workerID], taskID)
+	}
+	return ret, nil
 }
 
 // watch :1. watch worker changed and notify schedule
@@ -413,7 +448,7 @@ func (m *Master) watchSchedule(ctx context.Context) error {
 			m.logger.Error("handleScheduleRequest exit, ctx done", "error", err)
 			return err
 		case <-period.C:
-			m.NotifySchedule("periodic task scheduling ")
+			m.NotifySchedule("periodic scheduling")
 		case watchResp := <-watchChan:
 			for _, watchEvent := range watchResp.Events {
 				if watchEvent.IsCreate() {
