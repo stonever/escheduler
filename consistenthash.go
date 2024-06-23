@@ -4,6 +4,7 @@ import (
 	"hash/crc32"
 	"sort"
 	"strconv"
+	"sync"
 )
 
 type Hash func(data []byte) uint32
@@ -22,27 +23,28 @@ func NewHashRing(replicas int, fn Hash) *HashRing {
 
 type HashRing struct {
 	hash     Hash
-	replicas int            // Number of virtual nodes per real node
-	ring     []int          // Hash ring, sorted by node hash
+	replicas int   // Number of virtual nodes per real node
+	ring     []int // Hash ring, sorted by node hash
+	mu       sync.RWMutex
 	nodes    map[int]string // node hash to real node string, inverse process of hash mapping
 }
 
 // Add new nodes to the hash ring
 // Note that if the added node already exists, it will be duplicated above the hash ring, use Reset if you're not sure if it exists.
-func (m *HashRing) Add(nodes ...string) {
+func (r *HashRing) addLocked(nodes ...string) {
 	for _, node := range nodes {
 		// Create multiple virtual nodes per node
-		for i := 0; i < m.replicas; i++ {
+		for i := 0; i < r.replicas; i++ {
 			// 每个虚拟节点计算哈希值
-			hash := int(m.hash([]byte(strconv.Itoa(i) + node)))
+			hash := int(r.hash([]byte(strconv.Itoa(i) + node)))
 			// 加入哈希环
-			m.ring = append(m.ring, hash)
+			r.ring = append(r.ring, hash)
 			// 哈希值到真实节点字符串映射
-			m.nodes[hash] = node
+			r.nodes[hash] = node
 		}
 	}
 	// 哈希环排序
-	sort.Ints(m.ring)
+	sort.Ints(r.ring)
 }
 
 // Empty Whether there are nodes on the hash ring
@@ -53,8 +55,10 @@ func (r *HashRing) Empty() bool {
 // Empty the hash ring first and then set it
 func (r *HashRing) Reset(nodes ...string) {
 	r.ring = nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.nodes = map[int]string{}
-	r.Add(nodes...)
+	r.addLocked(nodes...)
 }
 
 // Get Get the node corresponding to Key
@@ -75,7 +79,8 @@ func (r *HashRing) Get(key string) string {
 	if idx == len(r.ring) {
 		idx = 0
 	}
-
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	// 返回哈希值对应的真实节点字符串
 	return r.nodes[r.ring[idx]]
 }

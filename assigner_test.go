@@ -1,33 +1,51 @@
 package escheduler
 
 import (
+	"fmt"
 	"testing"
-
-	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 
 func TestAssigner_GetReBalanceResult(t *testing.T) {
 	var (
-		a        = NewAssigner()
-		rootName = "root1"
+		a = NewCoordinator(1)
 	)
-	a.rootName = rootName
 	workerList := make([]string, 0)
-	workerList = append(workerList, "worker-a", "worker-b", "worker-c")
-	taskPathResp := make([]*mvccpb.KeyValue, 0)
-	taskMap := make(map[string]Task)
-	oldAssignMap := make(map[string][]string)
-	//ps := &parser{rootName: rootName}
-	for _, kv := range taskPathResp {
-		//worker := parseWorkerIDFromWorkerKey()
-		oldAssignMap[string(kv.Key)] = append(oldAssignMap[string(kv.Key)], "")
+	for i := 0; i < 10; i++ {
+		workerList = append(workerList, fmt.Sprintf("worker-%d", i))
 	}
-	gotToDeleteWorkerTaskKey, gotToDeleteTaskKey, gotAssignMap, err := a.GetReBalanceResult(workerList, taskMap, oldAssignMap)
+	taskMap := make(map[string]Task)
+	for i := 0; i < 10; i++ {
+		taskMap[fmt.Sprintf("%d", i)] = Task{ID: fmt.Sprintf("%d", i)}
+	}
+	var oldAssignMap map[string][]string
+	t.Log("first assign")
+	gotToDeleteWorkerKey, gotToDeleteTaskKey, gotToAssignMap, err := a.GetReBalanceResult(workerList, taskMap, oldAssignMap)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log(gotToDeleteWorkerTaskKey)
-	t.Log(gotToDeleteTaskKey)
-	t.Log(gotAssignMap)
-
+	t.Log("ToDeleteWorkerTaskKey:", gotToDeleteWorkerKey)
+	t.Log("ToDeleteTaskKey:", gotToDeleteTaskKey)
+	t.Log("ToAssignMap:", gotToAssignMap)
+	t.Log("second assign")
+	workerList = workerList[5:]
+	oldAssignMap = gotToAssignMap
+	gotToDeleteWorkerKey, gotToDeleteTaskKey, gotToAssignMap, err = a.GetReBalanceResult(workerList, taskMap, oldAssignMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("ToDeleteWorkerTaskKey:", gotToDeleteWorkerKey)
+	t.Log("ToDeleteTaskKey:", gotToDeleteTaskKey)
+	t.Log("ToAssignMap:", gotToAssignMap)
+	t.Log("third assign")
+	for i := 10; i < 15; i++ {
+		workerList = append(workerList, fmt.Sprintf("worker-%d", i))
+	}
+	oldAssignMap = gotToAssignMap
+	gotToDeleteWorkerKey, gotToDeleteTaskKey, gotToAssignMap, err = a.GetReBalanceResult(workerList, taskMap, oldAssignMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("ToDeleteWorkerKey:", gotToDeleteWorkerKey)
+	t.Log("ToDeleteTaskKey:", gotToDeleteTaskKey)
+	t.Log("ToAssignMap:", gotToAssignMap)
 }

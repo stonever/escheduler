@@ -13,7 +13,6 @@ import (
 	"github.com/sourcegraph/conc"
 	"github.com/stretchr/testify/assert"
 
-	. "github.com/smartystreets/goconvey/convey"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -22,7 +21,7 @@ func TestBarrier_AllLeftNewEnter(t *testing.T) {
 
 	node := Node{
 		EtcdConfig: clientv3.Config{
-			Endpoints:   []string{"127.0.0.1:23790"},
+			Endpoints:   []string{"127.0.0.1:2379"},
 			Username:    "root",
 			Password:    "password",
 			DialTimeout: 5 * time.Second,

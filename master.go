@@ -10,8 +10,6 @@ import (
 	"path"
 	"time"
 
-	"github.com/oleiade/lane/v2"
-
 	"github.com/pkg/errors"
 	"github.com/stonever/balancer/balancer"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -54,7 +52,7 @@ type Master struct {
 
 	// path
 	workerPath string
-	assigner   *Assigner
+	coo        *Coordinator
 	logger     *slog.Logger
 }
 
@@ -86,11 +84,7 @@ func NewMaster(config MasterConfig, node Node) (*Master, error) {
 		scheduleReqChan: make(chan string, 1),
 		logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})).
 			With("logger", "esched").With("master", node.Name),
-		assigner: NewAssigner(),
-	}
-	{
-		master.assigner.rootName = master.RootName
-		master.assigner.logger = master.logger
+		coo: NewCoordinator(1000),
 	}
 	master.ctx, master.cancel = context.WithCancel(context.Background())
 	// pass worker's ctx to client
@@ -325,7 +319,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 		return errors.New("worker count is zero")
 	}
 
-	toDeleteWorkerAllTask, toDeleteTask, toAddTask, err := m.assigner.GetReBalanceResult(workerList, generatedTaskMap, oldAssinMap)
+	toDeleteWorkerAllTask, toDeleteTask, toAddTask, err := m.coo.GetReBalanceResult(workerList, generatedTaskMap, oldAssinMap)
 	if err != nil {
 		return err
 	}
@@ -346,7 +340,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 			if len(tasks) == 0 {
 				continue
 			}
-			m.logger.Info("to delete a worker's expired task ", "workName", workName, "len", len(toDeleteTask))
+			m.logger.Info("delete a worker's expired task", "workName", workName, "len", len(tasks))
 			for _, taskID := range tasks {
 				taskKey := m.ps.EncodeTaskKey(workName, taskID)
 				_, err := m.client.KV.Delete(ctx, taskKey)

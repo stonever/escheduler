@@ -1,32 +1,29 @@
 package escheduler
 
 import (
-	"log/slog"
 	"sync"
 
 	"github.com/elliotchance/pie/v2"
 	"github.com/pkg/errors"
 )
 
-func NewAssigner() *Assigner {
-	return &Assigner{
-		ring: NewHashRing(10000, nil),
+func NewCoordinator(replicas int) *Coordinator {
+	return &Coordinator{
+		ring: NewHashRing(replicas, nil),
 	}
 }
 
-type Assigner struct {
+type Coordinator struct {
 	sync.Mutex
-	ring     *HashRing
-	rootName string
-	logger   *slog.Logger
+	ring *HashRing
 }
 
-func (a *Assigner) assignToRing(workerList []string, taskMap map[string]Task) (assignMap map[string][]string, err error) {
-	a.ring.Reset(workerList...)
+func (c *Coordinator) assignToRing(workerList []string, taskMap map[string]Task) (assignMap map[string][]string, err error) {
+	c.ring.Reset(workerList...)
 	assignMap = make(map[string][]string)
 	for taskID, v := range taskMap {
 		keyToRing := getKeyInRing(v)
-		workerKey := a.ring.Get(keyToRing)
+		workerKey := c.ring.Get(keyToRing)
 		if len(workerKey) == 0 {
 			return nil, errors.Errorf("failed locate task:%s in ring", v.ID)
 		}
@@ -40,10 +37,10 @@ func (a *Assigner) assignToRing(workerList []string, taskMap map[string]Task) (a
 // taskMap current task collection, key is ID ,value is task
 // taskPathResp current assigned state
 // taskPathResp []kv key: /Root/task/worker-0/task-abbr-1 value: task raw data for task 1
-func (a *Assigner) GetReBalanceResult(workers []string, generatedTaskMap map[string]Task, oldAssignMap map[string][]string) (toDeleteWorkerAllTask []string, toDeleteTask map[string][]string, toAddTask map[string][]string, err error) {
+func (c *Coordinator) GetReBalanceResult(workers []string, generatedTaskMap map[string]Task, oldAssignMap map[string][]string) (toDeleteWorkerAllTask []string, toDeleteTask map[string][]string, toAddTask map[string][]string, err error) {
 	_, toDeleteWorkerAllTask = pie.Diff[string](pie.Keys(oldAssignMap), workers)
 
-	newAssignMap, err := a.assignToRing(workers, generatedTaskMap)
+	newAssignMap, err := c.assignToRing(workers, generatedTaskMap)
 	if err != nil {
 		return
 	}
@@ -65,7 +62,7 @@ func (a *Assigner) GetReBalanceResult(workers []string, generatedTaskMap map[str
 
 func getKeyInRing(task Task) string {
 	if task.Key != "" {
-		return (task.Key)
+		return task.Key
 	}
-	return (task.ID)
+	return task.ID
 }
