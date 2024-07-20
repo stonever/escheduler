@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/oleiade/lane/v2"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -110,7 +111,7 @@ func (m *Master) Start() {
 	)
 	for {
 		err := m.Campaign(m.ctx)
-		if err == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			return
 		}
 		if err != nil {

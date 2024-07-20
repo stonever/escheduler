@@ -149,6 +149,7 @@ func (w *Worker) Start() {
 	defer func() {
 		wg.Wait()
 		w.SetStatus(WorkerStatusDead)
+		close(w.taskChan)
 	}()
 
 	wg.Go(func() {
