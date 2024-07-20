@@ -296,7 +296,7 @@ func (m *Master) doSchedule(ctx context.Context) error {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
 	}
-	m.logger.Info("coolect worker list and task list", "workerLen", len(workerList), "taskLen", len(generatedTaskList), "workerList", workerList)
+	m.logger.Info("collect worker list and task list", "workerLen", len(workerList), "taskLen", len(generatedTaskList), "workerList", workerList)
 
 	generatedTaskMap := make(map[string]Task)
 	for _, task := range generatedTaskList {
