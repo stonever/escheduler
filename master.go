@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/elliotchance/pie/v2"
 	"github.com/oleiade/lane/v2"
 	"log/slog"
 	"math/rand"
@@ -296,7 +297,14 @@ func (m *Master) doSchedule(ctx context.Context) error {
 		err = errors.Wrapf(err, "failed to generate tasks")
 		return err
 	}
-	m.logger.Info("coolect worker list and task list", "workerLen", len(workerList), "taskLen", len(generatedTaskList), "workerList", workerList)
+	generatedTaskList = pie.Filter(generatedTaskList, func(task Task) bool {
+		if task.ID == "" {
+			m.logger.Error("ignore task with empty ID", "task", task)
+			return false
+		}
+		return true
+	})
+	m.logger.Info("collect worker list and task list", "workerLen", len(workerList), "taskLen", len(generatedTaskList), "workerList", workerList)
 
 	generatedTaskMap := make(map[string]Task)
 	for _, task := range generatedTaskList {

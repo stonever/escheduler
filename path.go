@@ -40,11 +40,10 @@ func (p pathParser) parseTaskFromValue(value []byte) (task Task, err error) {
 func (p pathParser) parseTaskIDFromTaskKey(key string) (string, error) {
 	// key is /root/task/192.168.193.131-125075/10
 	// change to task/192.168.193.131-125075/10
-	key = strings.Replace(key, "/"+p.rootName+"/", "", 1)
 	expected := 3
-	arr := strings.SplitAfterN(key, "/", expected)
+	arr := strings.SplitAfterN(strings.Replace(key, "/"+p.rootName+"/", "", 1), "/", expected)
 	if len(arr) < expected { // should be 3
-		return "", errors.New("invalid format task key:" + key)
+		return "", errors.New("failed to parse taskID from key:" + key)
 	}
 	return arr[len(arr)-1], nil
 }
@@ -60,9 +59,8 @@ func (p pathParser) parseWorkerIDFromWorkerKey(key string) (string, error) {
 	rootName := p.rootName
 	// key is /root/worker/mq455
 	// change to worker/mq455
-	key = strings.Replace(key, "/"+rootName+"/", "", 1)
 	expected := 2
-	arr := strings.SplitAfterN(key, "/", expected)
+	arr := strings.SplitAfterN(strings.Replace(key, "/"+rootName+"/", "", 1), "/", expected)
 	if len(arr) < expected {
 		return "", errors.New("invalid format worker key:" + key)
 	}
@@ -82,7 +80,7 @@ func (p pathParser) parseWorkerIDFromTaskKey(key string) (string, error) {
 	expected := 3
 	arr := strings.SplitN(key, "/", expected)
 	if len(arr) < expected {
-		return "", errors.New("invalid format task key:" + key)
+		return "", errors.New("failed to parse workerID from key:" + key)
 	}
 	return arr[1], nil
 }
