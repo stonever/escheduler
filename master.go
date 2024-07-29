@@ -28,9 +28,10 @@ type MasterConfig struct {
 	Timeout       time.Duration // The maximum time to schedule once
 	Generator     Generator
 	ReBalanceWait time.Duration
+	Replicas      int // replica count per node in consistent hash ring
 }
 
-func (sc MasterConfig) Validation() error {
+func (sc *MasterConfig) Validation() error {
 	if sc.Interval == 0 {
 		return errors.New("Interval is required")
 	}
@@ -86,7 +87,7 @@ func NewMaster(config MasterConfig, node Node) (*Master, error) {
 		scheduleReqChan: make(chan string, 1),
 		logger: slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})).
 			With("logger", "esched").With("master", node.Name),
-		coo: NewCoordinator(1000),
+		coo: NewCoordinator(config.Replicas),
 	}
 	master.ctx, master.cancel = context.WithCancel(context.Background())
 	// pass worker's ctx to client

@@ -36,6 +36,7 @@ func TestStopScheduler(t *testing.T) {
 		Interval:  time.Second * 10,
 		Generator: tg,
 		Timeout:   time.Minute,
+		Replicas:  10000,
 	}
 
 	sc, err := NewMaster(schedConfig, node)

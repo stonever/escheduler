@@ -3,6 +3,7 @@ package escheduler
 import (
 	"context"
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"log"
 	"strconv"
 	"testing"
@@ -251,21 +252,12 @@ func TestWorkerTooMuch(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	time.Sleep(time.Second * 5)
-	Convey("worker1 register", t, func() {
-		So(workers[0].Status(), ShouldEqual, WorkerStatusRegistered)
-	})
-	Convey("worker2 received one task", t, func() {
-		So(workers[1].Status(), ShouldEqual, WorkerStatusRegistered)
-	})
-	Convey("worker3 received one task", t, func() {
-		So(workers[2].Status(), ShouldEqual, WorkerStatusRegistered)
-	})
-	Convey("worker3 received one task", t, func() {
-		So(workers[3].Status(), ShouldEqual, WorkerStatusNew)
-	})
-	Convey("worker3 received one task", t, func() {
-		So(workers[4].Status(), ShouldEqual, WorkerStatusNew)
-	})
+	require.Equal(t, workers[0].Status(), WorkerStatusRegistered)
+	require.Equal(t, workers[1].Status(), WorkerStatusRegistered)
+
+	require.Equal(t, workers[2].Status(), WorkerStatusRegistered)
+	require.Equal(t, workers[3].Status(), WorkerStatusNew)
+	require.Equal(t, workers[4].Status(), WorkerStatusNew)
 }
 func startWorker(ctx context.Context, node Node) *Worker {
 	worker, err := NewWorker(node)
@@ -298,10 +290,9 @@ func TestWorkerStatusDead(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		time.Sleep(time.Second)
-		Convey("worker1 received one task", t, func() {
-			status := worker1.Status()
-			So(status, ShouldEqual, WorkerStatusDead)
-		})
+
+		require.Equal(t, worker1.Status(), WorkerStatusDead)
+
 	}
 }
 func TestWorkerGetAllTask(t *testing.T) {
@@ -365,15 +356,12 @@ func TestWorkerGetAllTask(t *testing.T) {
 	for {
 		task1, err1 := worker1.Tasks(ctx)
 		task2, err2 := worker2.Tasks(ctx)
+		require.Nil(t, err1)
+		require.Nil(t, err2)
+		require.GreaterOrEqual(t, len(task1), 1)
 
-		Convey("err!=nil", t, func() {
-			So(err1, ShouldBeNil)
-			So(err2, ShouldBeNil)
-		})
-		Convey("task len", t, func() {
-			So(len(task1), ShouldBeGreaterThanOrEqualTo, 1)
-			So(len(task2), ShouldBeGreaterThanOrEqualTo, 1)
-		})
+		require.GreaterOrEqual(t, len(task2), 1)
+
 		time.Sleep(time.Second)
 	}
 
